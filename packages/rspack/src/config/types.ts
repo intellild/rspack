@@ -1085,7 +1085,7 @@ export type JavascriptParserOptions = {
    * Enable or disable evaluating import.meta.
    * @default true
    */
-  importMeta?: boolean;
+  importMeta?: boolean | 'preserve-unknown';
 
   /**
    * Enable parsing of new URL() syntax.
