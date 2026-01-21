@@ -15,9 +15,10 @@ pub struct ImportScriptsChunkLoadingPlugin;
 #[plugin_hook(CompilationAdditionalTreeRuntimeRequirements for ImportScriptsChunkLoadingPlugin)]
 async fn additional_tree_runtime_requirements(
   &self,
-  compilation: &mut Compilation,
+  compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
   runtime_requirements: &mut RuntimeGlobals,
+  _runtime_modules: &mut Vec<Box<dyn RuntimeModule>>,
 ) -> Result<()> {
   let chunk_loading_value = ChunkLoading::Enable(ChunkLoadingType::ImportScripts);
   let is_enabled_for_chunk = is_enabled_for_chunk(chunk_ukey, &chunk_loading_value, compilation);
@@ -27,6 +28,7 @@ async fn additional_tree_runtime_requirements(
       .has_chunk_entry_dependent_chunks(chunk_ukey, &compilation.chunk_group_by_ukey)
   {
     runtime_requirements.insert(RuntimeGlobals::STARTUP_CHUNK_DEPENDENCIES);
+    runtime_requirements.insert(RuntimeGlobals::ASYNC_STARTUP);
   }
   Ok(())
 }
