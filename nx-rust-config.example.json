@@ -1,0 +1,142 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "npmScope": "rspack",
+  
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*"],
+    "production": [
+      "!{projectRoot}/**/*.spec.ts",
+      "!{projectRoot}/**/*.test.ts",
+      "!{projectRoot}/**/__tests__/**/*"
+    ],
+    "rustSources": [
+      "{workspaceRoot}/crates/**/*.rs",
+      "{workspaceRoot}/crates/**/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "!{workspaceRoot}/crates/**/target/**/*",
+      "!{workspaceRoot}/crates/**/*.gen.rs"
+    ]
+  },
+
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["production", "^production"],
+      "cache": true
+    },
+    
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": ["default", "^production"],
+      "cache": true
+    },
+
+    "==========================================": "Rust Binding 特殊配置",
+    "@rspack/binding:build": {
+      "dependsOn": [],
+      "inputs": [
+        "{projectRoot}/**/*",
+        "{workspaceRoot}/crates/node_binding/**/*",
+        "{workspaceRoot}/crates/rspack_binding_api/**/*",
+        "rustSources"
+      ],
+      "outputs": [
+        "{projectRoot}/*.node",
+        "{projectRoot}/*.wasm",
+        "{projectRoot}/binding.js",
+        "{projectRoot}/binding.d.ts"
+      ],
+      "cache": true
+    },
+
+    "===========================================": "JS 包监听 Rust 变化",
+    "@rspack/core:build": {
+      "dependsOn": ["@rspack/binding:build"],
+      "inputs": [
+        "{projectRoot}/src/**/*",
+        "{projectRoot}/package.json",
+        "{workspaceRoot}/crates/node_binding/**/*.rs",
+        "{workspaceRoot}/crates/node_binding/Cargo.toml"
+      ],
+      "cache": true
+    },
+
+    "@rspack/cli:build": {
+      "dependsOn": ["@rspack/core:build"],
+      "inputs": [
+        "{projectRoot}/src/**/*",
+        "{projectRoot}/package.json",
+        "^production"
+      ],
+      "cache": true
+    },
+
+    "@rspack/test-tools:build": {
+      "dependsOn": ["@rspack/core:build"],
+      "inputs": [
+        "{projectRoot}/src/**/*",
+        "{projectRoot}/package.json",
+        "^production"
+      ],
+      "cache": true
+    }
+  },
+
+  "========================================": "项目特定配置",
+  "projects": {
+    "@rspack/binding": {
+      "root": "crates/node_binding",
+      "sourceRoot": "crates/node_binding/src",
+      "projectType": "library",
+      "targets": {
+        "build": {
+          "executor": "nx:run-commands",
+          "options": {
+            "command": "napi build --platform",
+            "cwd": "crates/node_binding"
+          }
+        }
+      }
+    },
+    "@rspack/core": {
+      "root": "packages/rspack",
+      "sourceRoot": "packages/rspack/src",
+      "projectType": "library",
+      "targets": {
+        "build": {
+          "executor": "nx:run-commands",
+          "options": {
+            "command": "pnpm rslib build"
+          }
+        }
+      }
+    },
+    "@rspack/cli": {
+      "root": "packages/rspack-cli",
+      "sourceRoot": "packages/rspack-cli/src",
+      "projectType": "library",
+      "targets": {
+        "build": {
+          "executor": "nx:run-commands",
+          "options": {
+            "command": "pnpm rslib build"
+          }
+        }
+      }
+    }
+  },
+
+  "========================================": "可选：使用自定义插件",
+  "plugins": [
+    {
+      "plugin": "@monodon/rust",
+      "options": {
+        "cargoWorkspaceRoot": "."
+      }
+    },
+    {
+      "plugin": "./tools/rust-binding-sync-plugin.js",
+      "options": {}
+    }
+  ]
+}
