@@ -1224,9 +1224,9 @@ Enable or disable evaluating `import.meta`.
 
 When using [ESM output](/guide/features/esm), default value is set to `'preserve-unknown'`, otherwise `true`.
 
-- `"preserve-unknown"`: Unknown `import.meta` properties are determined at runtime instead of being statically analyzed at compile time.
-- `true`: All `import.meta` properties are statically analyzed at compile time.
-- `false`: All `import.meta` properties are determined at runtime
+- `"preserve-unknown"`: [Known `import.meta` properties](/api/runtime-api/module-variables#importmeta-esm) are statically analyzed at compile-time, other properties are preserved and evaluated at runtime.
+- `true`: All `import.meta` properties are statically analyzed at compile-time.
+- `false`: All `import.meta` properties are evaluated at runtime.
 
 ```js title="rspack.config.mjs"
 export default {
