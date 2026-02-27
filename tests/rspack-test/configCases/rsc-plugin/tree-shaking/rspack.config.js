@@ -32,8 +32,14 @@ const swcLoaderRule = {
     ],
 };
 
+const cssRule = {
+    test: /\.css$/,
+    type: 'css/auto',
+};
+
 module.exports = [
     {
+        name: 'server',
         mode: 'production',
         target: 'node',
         entry: {
@@ -46,6 +52,7 @@ module.exports = [
         },
         module: {
             rules: [
+                cssRule,
                 swcLoaderRule,
                 {
                     resource: ssrEntry,
@@ -69,17 +76,21 @@ module.exports = [
         plugins: [
             new ServerPlugin(),
             new rspack.DefinePlugin({
-                CLIENT_PATH: JSON.stringify(path.resolve(__dirname, 'src/Client.js')),
+                TODOS_PATH: JSON.stringify(path.join(__dirname, 'src/Todos.js')),
             }),
         ],
         optimization: {
             moduleIds: 'named',
             concatenateModules: true,
         },
+        output: {
+            filename: '[name].js',
+        },
     },
     {
+        name: 'client',
         mode: 'production',
-        target: 'web',
+        target: 'node',
         entry: {
             main: {
                 import: './src/framework/entry.client.js',
@@ -89,12 +100,21 @@ module.exports = [
             extensions: ['...', '.ts', '.tsx', '.jsx'],
         },
         module: {
-            rules: [swcLoaderRule],
+            rules: [
+                cssRule,
+                swcLoaderRule
+            ],
         },
         plugins: [new ClientPlugin()],
         optimization: {
             moduleIds: 'named',
             concatenateModules: true,
+        },
+        output: {
+            filename: 'static/[name].js',
+            library: {
+                type: 'commonjs',
+            },
         },
     },
 ];
