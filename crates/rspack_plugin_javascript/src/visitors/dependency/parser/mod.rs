@@ -417,11 +417,12 @@ impl<'parser> JavascriptParser<'parser> {
       plugins.push(Box::new(
         parser_plugin::ImportMetaContextDependencyParserPlugin,
       ));
-      if matches!(javascript_options.import_meta, Some(ImportMeta::Enabled) | Some(ImportMeta::PreserveUnknown)) {
+      if matches!(
+        javascript_options.import_meta,
+        Some(ImportMeta::Enabled | ImportMeta::PreserveUnknown)
+      ) {
         plugins.push(Box::new(parser_plugin::ImportMetaPlugin(
-          javascript_options
-            .import_meta
-            .expect("should have value"),
+          javascript_options.import_meta.expect("should have value"),
         )));
       } else {
         plugins.push(Box::new(parser_plugin::ImportMetaDisabledPlugin));
