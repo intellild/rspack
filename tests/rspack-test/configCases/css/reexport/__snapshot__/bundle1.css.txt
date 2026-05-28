@@ -1,20 +1,14 @@
-@value primary from "./theme.module.css";
-@value error from "./theme.module.css";
-
-@value colors: "./theme.module.css";
-@value danger: error from colors;
-
 .E_OvvY {
-	color: danger
+	color: #e74c3c
 }
 
 .Q-49ks {
-	background-color: primary;
+	background-color: #3498db;
 	color: white;
 }
 
 .UILpUa {
-	background-color: error;
+	background-color: #e74c3c;
 	border: 2px solid darkred;
 }
 
@@ -64,6 +58,13 @@
 	transform: scale(1.02);
 }
 
+.qdzzZe {
+	
+	
+	border: 1px solid #ccc;
+	border-radius: 8px;
+}
+
 ._8aNfK_ {
 	
 	
@@ -75,11 +76,20 @@
 
 
 
-.qdzzZe {
+.j2PdtE {
+	color: red;
+}
+
+.Ro5Pxh {
+	color: red;
+}
+
+.Ro5Pxh {
 	
-	
-	border: 1px solid #ccc;
-	border-radius: 8px;
+}
+
+.P1ehFp {
+	color: red;
 }
 
 
@@ -109,6 +119,62 @@
 .furHaz {
 	background: blue;
 }
+
+
+
+
+
+
+
+
+
+
+
+.xJ2SpX {
+	color: a;
+}
+
+.mmNM9- {
+	color: b;
+}
+
+.R4nl9c {
+	color: c;
+}
+
+.RSkK1x {
+	color: d;
+}
+
+.Dckb98 {
+	color: d;
+}
+
+.izFRDC {
+	
+}
+
+:root {
+	--jfhoh6: red;
+}
+
+.jfhoh6 {
+	color: red;
+}
+
+:root {
+	--r8QhIU: black;
+}
+
+:root {
+	--ka_6Pj: blue;
+	--Ukr1Q6: var(--r8QhIU)
+}
+
+
+
+
+
 
 
 
@@ -165,10 +231,10 @@
 	color: blue;
 }
 
-@value composes-test-here: composes-here;
+
 
 .iYZI63 {
-	composes: composes-test-here, __import_f__, global(bar);
+	
 	color: blue;
 }
 
@@ -196,92 +262,92 @@
 }
 
 :root {
-	--color: red;
+	--zCGg-b: red;
 }
 
-@value --my-custom-property-1: --color;
+
 
 
 
 .lN8cZb {
-	color: var(--color);
-	background-color: var(--shared from "./shared-custom-properties.module.css");
-	border-color: var(--deep-shared from "./shared-custom-properties.module.css");
-	outline-color: var(--my-custom-property-1);
-	text-decoration-color: var(--reexport-my-var-u1);
+	color: var(--zCGg-b);
+	background-color: var(--ka_6Pj);
+	border-color: var(--Ukr1Q6);
+	outline-color: var(--zCGg-b);
+	text-decoration-color: var(--jfhoh6);
 }
 
 .Qd9RVw {
-	color: var(--my-var-u1 from "./vars.module.css");
+	color: var(--jfhoh6);
 }
 
-@value primary, secondary as my-custom-color from "./colors.module.css";
+
 
 .Mx1drJ {
-	background-color: primary;
-	color: my-custom-color;
+	background-color: #3498db;
+	color: #2ecc71;
 }
 
-@value foo: red;
+
 
 .A62m63 {
-	color: foo;
+	color: red;
 }
 
-@value blue: #3498db;
-@value rename: blue;
+
+
 
 .TLOxAV {
-	background-color: rename;
+	background-color: #3498db;
 }
 
-@value danger from "./colors.module.css";
-@value rename-2: danger;
+
+
 
 .J75kHj {
-	background-color: rename-2;
+	background-color: #e74c3c;
 }
 
-@value danger as danger-alias from "./colors.module.css";
-@value rename-3: danger-alias;
+
+
 
 ._8-YjdR {
-	background-color: rename-3;
+	background-color: #e74c3c;
 }
 
-@value colors: "./colors.module.css";
-@value third from colors;
+
+
 
 ._0vDmWC {
-	background-color: third;
+	background-color: #c1c2c3;
 }
 
 .trrWBd {
-	content: __REEXPORT3__
+	content: "export3-value"
 }
 
-@value selector: my-selector-value;
-.hydESP { value: selector; }
 
-@value other-selector from "./selectors.module.css";
-.lwweu5 { value: other-selector; }
+.hydESP { value: my-selector-value; }
 
-@value other-selector as alias-other-selector from "./selectors.module.css";
-.z-yLea { value: alias-other-selector; }
 
-@value reexport-selector from "./selectors.module.css";
-.K3y_NA { value: reexport-selector; }
+.lwweu5 { value: other-selector-value; }
 
-@value reexport-selector as reexport-selector-alias from "./selectors.module.css";
-._2jSHbX { value: reexport-selector-alias; }
 
-@value colors: "./colors.module.css";
-@value third from colors;
-._61LowY { background-color: third; }
+.z-yLea { value: other-selector-value; }
 
-@value danger as danger-alias-selector from "./colors.module.css";
-@value rename-3: danger-alias-selector;
-.zVEFPg { background-color: rename-3; }
+
+.K3y_NA { value: reexport-selector-value; }
+
+
+._2jSHbX { value: reexport-selector-value; }
+
+
+
+._61LowY { background-color: #c1c2c3; }
+
+
+
+.zVEFPg { background-color: #e74c3c; }
 
 .XuepqC {
 	color: white;
@@ -306,7 +372,7 @@
 
 
 
-.rh1p7E { color: blue; }
+.rh1p7E { color: #3498db; }
 
 .OBvJMj {
 	
@@ -327,7 +393,7 @@
 
 
 .MTGbMU {
-	color: __import_localName__;
+	color: GB2FOr;
 }
 
 
@@ -342,9 +408,9 @@
 
 
 
-@value in-composes: abc-from-def_local;
 
-.rh1p7E { color: blue; }
+
+.rh1p7E { color: #3498db; }
 
 ._3M386q {
 	

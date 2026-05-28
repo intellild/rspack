@@ -1,20 +1,14 @@
-@value primary from "./theme.module.css";
-@value error from "./theme.module.css";
-
-@value colors: "./theme.module.css";
-@value danger: error from colors;
-
 .value-at-rule_module_css-color {
-	color: danger
+	color: #e74c3c
 }
 
 .value-at-rule_module_css-button {
-	background-color: primary;
+	background-color: #3498db;
 	color: white;
 }
 
 .value-at-rule_module_css-button-error {
-	background-color: error;
+	background-color: #e74c3c;
 	border: 2px solid darkred;
 }
 
@@ -64,6 +58,13 @@
 	transform: scale(1.02);
 }
 
+.button-reexport_module_css-base-reexport {
+	
+	
+	border: 1px solid #ccc;
+	border-radius: 8px;
+}
+
 .button_module_css-base {
 	
 	
@@ -75,11 +76,20 @@
 
 
 
-.button-reexport_module_css-base-reexport {
+.classes-deep_module_css-deep-selector {
+	color: red;
+}
+
+.classes-deep_module_css-deep-selector-with-composes {
+	color: red;
+}
+
+.classes-deep_module_css-deep-selector-with-composes {
 	
-	
-	border: 1px solid #ccc;
-	border-radius: 8px;
+}
+
+.classes-deep_module_css-deep-nested-c {
+	color: red;
 }
 
 
@@ -109,6 +119,62 @@
 .classes-the-same_module_css-localName {
 	background: blue;
 }
+
+
+
+
+
+
+
+
+
+
+
+.abcd_modules_css-a {
+	color: a;
+}
+
+.abcd_modules_css-b {
+	color: b;
+}
+
+.abcd_modules_css-c {
+	color: c;
+}
+
+.abcd_modules_css-d {
+	color: d;
+}
+
+.abcd_modules_css-e {
+	color: d;
+}
+
+.abcd_modules_css-f {
+	
+}
+
+:root {
+	--vars_module_css-my-var-u1: red;
+}
+
+.vars_module_css-my-var-u1 {
+	color: red;
+}
+
+:root {
+	--shared-deep-custom-properties_module_css-deep-shared: black;
+}
+
+:root {
+	--shared-custom-properties_module_css-shared: blue;
+	--shared-custom-properties_module_css-deep-shared: var(--shared-deep-custom-properties_module_css-deep-shared)
+}
+
+
+
+
+
 
 
 
@@ -165,10 +231,10 @@
 	color: blue;
 }
 
-@value composes-test-here: composes-here;
+
 
 .styles_module_css-local-composes-with-reexport-and-value {
-	composes: composes-test-here, __import_f__, global(bar);
+	
 	color: blue;
 }
 
@@ -196,92 +262,92 @@
 }
 
 :root {
-	--color: red;
+	--styles_module_css-color: red;
 }
 
-@value --my-custom-property-1: --color;
+
 
 
 
 .styles_module_css-custom-properties {
-	color: var(--color);
-	background-color: var(--shared from "./shared-custom-properties.module.css");
-	border-color: var(--deep-shared from "./shared-custom-properties.module.css");
-	outline-color: var(--my-custom-property-1);
-	text-decoration-color: var(--reexport-my-var-u1);
+	color: var(--styles_module_css-color);
+	background-color: var(--shared-custom-properties_module_css-shared);
+	border-color: var(--shared-custom-properties_module_css-deep-shared);
+	outline-color: var(--styles_module_css-color);
+	text-decoration-color: var(--vars_module_css-my-var-u1);
 }
 
 .styles_module_css-from {
-	color: var(--my-var-u1 from "./vars.module.css");
+	color: var(--vars_module_css-my-var-u1);
 }
 
-@value primary, secondary as my-custom-color from "./colors.module.css";
+
 
 .styles_module_css-button-with-color {
-	background-color: primary;
-	color: my-custom-color;
+	background-color: #3498db;
+	color: #2ecc71;
 }
 
-@value foo: red;
+
 
 .styles_module_css-button-with-color-too {
-	color: foo;
+	color: red;
 }
 
-@value blue: #3498db;
-@value rename: blue;
+
+
 
 .styles_module_css-button-rename-1 {
-	background-color: rename;
+	background-color: #3498db;
 }
 
-@value danger from "./colors.module.css";
-@value rename-2: danger;
+
+
 
 .styles_module_css-button-rename-2 {
-	background-color: rename-2;
+	background-color: #e74c3c;
 }
 
-@value danger as danger-alias from "./colors.module.css";
-@value rename-3: danger-alias;
+
+
 
 .styles_module_css-button-rename-3 {
-	background-color: rename-3;
+	background-color: #e74c3c;
 }
 
-@value colors: "./colors.module.css";
-@value third from colors;
+
+
 
 .styles_module_css-button-rename-4 {
-	background-color: third;
+	background-color: #c1c2c3;
 }
 
 .styles_module_css-button-export-5 {
-	content: __REEXPORT3__
+	content: "export3-value"
 }
 
-@value selector: my-selector-value;
-.styles_module_css-selector { value: selector; }
 
-@value other-selector from "./selectors.module.css";
-.styles_module_css-other-selector { value: other-selector; }
+.styles_module_css-selector { value: my-selector-value; }
 
-@value other-selector as alias-other-selector from "./selectors.module.css";
-.styles_module_css-alias-other-selector { value: alias-other-selector; }
 
-@value reexport-selector from "./selectors.module.css";
-.styles_module_css-reexport-selector { value: reexport-selector; }
+.styles_module_css-other-selector { value: other-selector-value; }
 
-@value reexport-selector as reexport-selector-alias from "./selectors.module.css";
-.styles_module_css-reexport-selector-alias { value: reexport-selector-alias; }
 
-@value colors: "./colors.module.css";
-@value third from colors;
-.styles_module_css-third { background-color: third; }
+.styles_module_css-alias-other-selector { value: other-selector-value; }
 
-@value danger as danger-alias-selector from "./colors.module.css";
-@value rename-3: danger-alias-selector;
-.styles_module_css-rename-3 { background-color: rename-3; }
+
+.styles_module_css-reexport-selector { value: reexport-selector-value; }
+
+
+.styles_module_css-reexport-selector-alias { value: reexport-selector-value; }
+
+
+
+.styles_module_css-third { background-color: #c1c2c3; }
+
+
+
+.styles_module_css-rename-3 { background-color: #e74c3c; }
 
 .styles_module_css-local-class {
 	color: white;
@@ -306,7 +372,7 @@
 
 
 
-.styles_module_css-local-for-reexport { color: blue; }
+.styles_module_css-local-for-reexport { color: #3498db; }
 
 .styles_module_css-deep-reexport-in-composes {
 	
@@ -327,7 +393,7 @@
 
 
 .styles_module_css-class-from-pseudo-import {
-	color: __import_localName__;
+	color: classes_module_css-localName;
 }
 
 
@@ -342,9 +408,9 @@
 
 
 
-@value in-composes: abc-from-def_local;
 
-.styles_module_css-local-for-reexport { color: blue; }
+
+.styles_module_css-local-for-reexport { color: #3498db; }
 
 .styles_module_css-deep-reexport-in-composes-other-other {
 	

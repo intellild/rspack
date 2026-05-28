@@ -17,7 +17,7 @@ use rustc_hash::FxHashSet as HashSet;
 
 use crate::{
   parser_and_generator::{get_unused_local_ident, get_used_exports},
-  utils::{replace_css_module_id_placeholder, unescape},
+  utils::{replace_css_local_ident, unescape},
 };
 
 pub fn update_css_exports(exports: &mut CssExports, name: &str, css_export: CssExport) -> bool {
@@ -224,28 +224,27 @@ impl<'a, 'g> CssModuleGenerator<'a, 'g> {
 
         match from {
           None => {
-            let ident = replace_css_module_id_placeholder(ident, compilation, module);
+            let ident = replace_css_local_ident(ident, compilation, module);
             content.push_str(&json_stringify_str(&ident));
           }
           Some(from_name) => {
-            let from = module
-              .get_dependencies()
-              .iter()
-              .find_map(|id| {
-                let dependency = module_graph.dependency_by_id(id);
-                let request = if let Some(d) = dependency.as_module_dependency() {
-                  Some(d.request())
-                } else {
-                  dependency.as_context_dependency().map(|d| d.request())
-                };
-                if let Some(request) = request
-                  && request == from_name
-                {
-                  return module_graph.module_graph_module_by_dependency_id(id);
-                }
-                None
-              })
-              .expect("should have css from module");
+            let Some(from) = module.get_dependencies().iter().find_map(|id| {
+              let dependency = module_graph.dependency_by_id(id);
+              let request = if let Some(d) = dependency.as_module_dependency() {
+                Some(d.request())
+              } else {
+                dependency.as_context_dependency().map(|d| d.request())
+              };
+              if let Some(request) = request
+                && request == from_name
+              {
+                return module_graph.module_graph_module_by_dependency_id(id);
+              }
+              None
+            }) else {
+              content.push_str(&json_stringify_str(ident));
+              continue;
+            };
 
             let from_exports_info = compilation
               .exports_info_artifact
@@ -332,32 +331,28 @@ impl<'a, 'g> CssModuleGenerator<'a, 'g> {
 
         match from {
           None => {
-            let ident = replace_css_module_id_placeholder(
-              ident,
-              self.generate_context.compilation,
-              self.module,
-            );
+            let ident =
+              replace_css_local_ident(ident, self.generate_context.compilation, self.module);
             stringified_exports.push_str(&json_stringify_str(&ident));
           }
           Some(from_name) => {
-            let from = module
-              .get_dependencies()
-              .iter()
-              .find_map(|id| {
-                let dependency = module_graph.dependency_by_id(id);
-                let request = if let Some(d) = dependency.as_module_dependency() {
-                  Some(d.request())
-                } else {
-                  dependency.as_context_dependency().map(|d| d.request())
-                };
-                if let Some(request) = request
-                  && request == from_name
-                {
-                  return module_graph.module_graph_module_by_dependency_id(id);
-                }
-                None
-              })
-              .expect("should have css from module");
+            let Some(from) = module.get_dependencies().iter().find_map(|id| {
+              let dependency = module_graph.dependency_by_id(id);
+              let request = if let Some(d) = dependency.as_module_dependency() {
+                Some(d.request())
+              } else {
+                dependency.as_context_dependency().map(|d| d.request())
+              };
+              if let Some(request) = request
+                && request == from_name
+              {
+                return module_graph.module_graph_module_by_dependency_id(id);
+              }
+              None
+            }) else {
+              stringified_exports.push_str(&json_stringify_str(&unescape(ident)));
+              continue;
+            };
 
             let from_exports_info = compilation
               .exports_info_artifact
