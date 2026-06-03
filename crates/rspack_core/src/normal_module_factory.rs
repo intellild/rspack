@@ -594,9 +594,6 @@ mod tests {
         url: None,
         r#import: None,
         resolve_import: None,
-        animation: None,
-        custom_idents: None,
-        dashed_idents: None,
       })),
       Some(&GeneratorOptions::Css(CssGeneratorOptions {
         exports_only: Some(false),
