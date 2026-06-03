@@ -17,7 +17,7 @@ use rustc_hash::FxHashSet as HashSet;
 
 use crate::{
   parser_and_generator::{get_unused_local_ident, get_used_exports},
-  utils::{replace_css_local_ident, unescape},
+  utils::{replace_css_module_id_placeholder, unescape},
 };
 
 pub fn update_css_exports(exports: &mut CssExports, name: &str, css_export: CssExport) -> bool {
@@ -224,7 +224,7 @@ impl<'a, 'g> CssModuleGenerator<'a, 'g> {
 
         match from {
           None => {
-            let ident = replace_css_local_ident(ident, compilation, module);
+            let ident = replace_css_module_id_placeholder(ident, compilation, module);
             content.push_str(&json_stringify_str(&ident));
           }
           Some(from_name) => {
@@ -331,8 +331,11 @@ impl<'a, 'g> CssModuleGenerator<'a, 'g> {
 
         match from {
           None => {
-            let ident =
-              replace_css_local_ident(ident, self.generate_context.compilation, self.module);
+            let ident = replace_css_module_id_placeholder(
+              ident,
+              self.generate_context.compilation,
+              self.module,
+            );
             stringified_exports.push_str(&json_stringify_str(&ident));
           }
           Some(from_name) => {

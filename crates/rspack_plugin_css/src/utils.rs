@@ -271,6 +271,10 @@ pub fn replace_css_module_id_placeholder<'a>(
   compilation: &Compilation,
   module: &dyn Module,
 ) -> Cow<'a, str> {
+  if let Some(custom_property_ident) = local_ident.strip_prefix("--") {
+    let local_ident = replace_css_module_id_placeholder(custom_property_ident, compilation, module);
+    return Cow::Owned(format!("--{local_ident}"));
+  }
   if !local_ident.contains(CSS_MODULE_ID_PLACEHOLDER) {
     return Cow::Borrowed(local_ident);
   }
@@ -283,18 +287,6 @@ pub fn replace_css_module_id_placeholder<'a>(
       .replace(&local_ident, "_${1}")
       .into_owned(),
   )
-}
-
-pub fn replace_css_local_ident<'a>(
-  local_ident: &'a str,
-  compilation: &Compilation,
-  module: &dyn Module,
-) -> Cow<'a, str> {
-  if let Some(custom_property_ident) = local_ident.strip_prefix("--") {
-    let local_ident = replace_css_module_id_placeholder(custom_property_ident, compilation, module);
-    return Cow::Owned(format!("--{local_ident}"));
-  }
-  replace_css_module_id_placeholder(local_ident, compilation, module)
 }
 
 static PREPARE_CSS_MODULE_ID_START_REGEX: LazyLock<Regex> =
