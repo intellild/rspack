@@ -1084,7 +1084,8 @@ module.exports = "data:,";
       resource_data.resource().to_owned()
     };
 
-    let resolved_module_type = self.calculate_module_type(match_module_type, &matched_module_rules);
+    let resolved_module_type =
+      self.calculate_module_type(match_module_type, &matched_module_rules, &dependency_type);
     let resolved_module_layer =
       self.calculate_module_layer(data.issuer_layer.as_ref(), &matched_module_rules);
 
@@ -1260,12 +1261,24 @@ module.exports = "data:,";
     &self,
     matched_module_type: Option<ModuleType>,
     module_rules: &[&ModuleRuleEffect],
+    dependency_type: &DependencyType,
   ) -> ModuleType {
     let mut resolved_module_type = matched_module_type.unwrap_or(ModuleType::JsAuto);
+    let mut has_rule_module_type = false;
     for module_rule in module_rules {
       if let Some(module_type) = module_rule.r#type {
         resolved_module_type = module_type;
+        has_rule_module_type = true;
       };
+    }
+
+    if !has_rule_module_type
+      && matches!(
+        dependency_type,
+        DependencyType::CssUrl | DependencyType::NewUrl
+      )
+    {
+      return ModuleType::AssetResource;
     }
 
     resolved_module_type

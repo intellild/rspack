@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use rspack_core::{
-  ChunkCodeTemplate, ChunkInitFragments, ChunkUkey, CodeGenerationDataFilename, Compilation,
-  CompilationParams, CompilerCompilation, DependencyId, JavascriptParserUrl, Module, ModuleType,
-  NormalModuleFactoryParser, ParserAndGenerator, ParserOptions, Plugin, URLStaticMode,
-  rspack_sources::ReplaceSource,
+  AssetInfo, ChunkCodeTemplate, ChunkInitFragments, ChunkUkey, CodeGenerationDataFilename,
+  Compilation, CompilationParams, CompilerCompilation, DependencyId, ImportMeta,
+  JavascriptParserUrl, ManifestAssetType, Module, ModuleType, NormalModuleFactoryParser,
+  ParserAndGenerator, ParserOptions, PathData, Plugin, SourceType, URLStaticMode,
+  get_css_chunk_filename_template, rspack_sources::ReplaceSource,
 };
 use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
@@ -46,9 +47,15 @@ async fn normal_module_factory_parser(
       .expect("should at least have a global javascript parser options");
 
     if !matches!(options.url, Some(JavascriptParserUrl::Disable)) {
-      parser.add_parser_plugin(Box::new(crate::parser_plugin::URLPlugin {
-        mode: options.url,
-      }));
+      let mode = if matches!(options.import_meta, Some(ImportMeta::Disabled))
+        && matches!(options.url, None | Some(JavascriptParserUrl::Enable))
+      {
+        Some(JavascriptParserUrl::NewUrlRelative)
+      } else {
+        options.url
+      };
+
+      parser.add_parser_plugin(Box::new(crate::parser_plugin::URLPlugin { mode }));
     }
   }
 
@@ -93,16 +100,54 @@ async fn render_module_content(
       let codegen_result = compilation
         .code_generation_results
         .get(module, Some(runtime));
-      let Some(filename) = codegen_result.data.get::<CodeGenerationDataFilename>() else {
-        unreachable!()
+      let filename = if let Some(filename) = codegen_result.data.get::<CodeGenerationDataFilename>()
+      {
+        filename.filename().to_string()
+      } else {
+        let module = module_graph
+          .module_by_identifier(module)
+          .expect("module should exist");
+        if module.source_types(module_graph).contains(&SourceType::Css)
+          || matches!(
+            module.module_type(),
+            ModuleType::Css | ModuleType::CssAuto | ModuleType::CssModule | ModuleType::CssGlobal
+          )
+        {
+          let chunk = compilation
+            .build_chunk_graph_artifact
+            .chunk_by_ukey
+            .expect_get(chunk_ukey);
+          let filename_template = get_css_chunk_filename_template(
+            chunk,
+            &compilation.options.output,
+            &compilation.build_chunk_graph_artifact.chunk_group_by_ukey,
+          );
+          let mut asset_info = AssetInfo::default().with_asset_type(ManifestAssetType::Css);
+          compilation
+            .get_path_with_info(
+              filename_template,
+              PathData::default()
+                .chunk_id_optional(chunk.id().map(|id| id.as_str()))
+                .chunk_hash_optional(chunk.rendered_hash(
+                  &compilation.chunk_hashes_artifact,
+                  compilation.options.output.hash_digest_length,
+                ))
+                .chunk_name_optional(chunk.name_for_filename_template())
+                .content_hash_optional(chunk.rendered_content_hash_by_source_type(
+                  &compilation.chunk_hashes_artifact,
+                  &SourceType::Css,
+                  compilation.options.output.hash_digest_length,
+                ))
+                .runtime(chunk.runtime().as_str()),
+              &mut asset_info,
+            )
+            .await?
+        } else {
+          unreachable!()
+        }
       };
 
-      replace_source.replace(
-        start as u32,
-        end as u32,
-        filename.filename().to_string(),
-        None,
-      );
+      replace_source.replace(start as u32, end as u32, filename, None);
     }
 
     render_source.source = Arc::new(replace_source);

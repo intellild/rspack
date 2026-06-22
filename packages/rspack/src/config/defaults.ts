@@ -618,9 +618,7 @@ const applyModuleDefaults = (
             scheme: /^data$/,
             type: 'asset/inline',
           },
-          {
-            type: 'asset/resource',
-          },
+          {},
         ],
       },
       {
