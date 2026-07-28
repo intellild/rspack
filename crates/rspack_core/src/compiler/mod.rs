@@ -18,10 +18,11 @@ use crate::{
   BoxPlugin, CleanOptions, Compilation, CompilationAsset, CompilationLogging, CompilerOptions,
   CompilerPlatform, ContextModuleFactory, Filename, KeepPattern, NormalModuleFactory, PluginDriver,
   ResolverFactory, SharedPluginDriver,
-  cache::{Cache, new_cache_with_loader_cache},
+  cache::{Cache, new_cache},
   compilation::build_module_graph::ModuleExecutor,
   fast_set, include_hash,
   incremental::{Incremental, IncrementalPasses},
+  loader::LoaderCacheService,
   logger::Logger,
   trim_dir,
 };
@@ -151,13 +152,12 @@ impl Compiler {
 
     let options = Arc::new(options);
     let compilation_logging: CompilationLogging = Default::default();
-    let (cache, loader_cache_service) = new_cache_with_loader_cache(
+    let loader_cache_service = LoaderCacheService::from_compiler_options(
       &compiler_path,
-      options.clone(),
-      input_filesystem.clone(),
+      &options,
       intermediate_filesystem.clone(),
-      compilation_logging.clone(),
-    );
+    )
+    .map(Arc::new);
     let plugin_driver = PluginDriver::new_with_loader_cache(
       options.clone(),
       plugins,
@@ -169,6 +169,13 @@ impl Compiler {
       buildtime_plugins,
       resolver_factory.clone(),
       plugin_driver.loader_cache_service.clone(),
+    );
+    let cache = new_cache(
+      &compiler_path,
+      options.clone(),
+      input_filesystem.clone(),
+      intermediate_filesystem.clone(),
+      compilation_logging.clone(),
     );
     let incremental = Incremental::new_cold(options.incremental);
     let module_executor = ModuleExecutor::default();
@@ -290,6 +297,9 @@ impl Compiler {
     self.compile().await?;
     self.compile_done().await?;
     self.cache.after_compile(&self.compilation).await;
+    if let Some(loader_cache) = &self.plugin_driver.loader_cache_service {
+      loader_cache.save().await;
+    }
     #[cfg(allocative)]
     crate::utils::snapshot_allocative("build");
 
@@ -591,6 +601,9 @@ impl Compiler {
       .await?;
 
     self.cache.close().await;
+    if let Some(loader_cache) = &self.plugin_driver.loader_cache_service {
+      loader_cache.close().await;
+    }
 
     Ok(())
   }
