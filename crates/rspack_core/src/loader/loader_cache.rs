@@ -16,7 +16,7 @@ use rspack_fs::IntermediateFileSystem;
 use rspack_hash::{HashFunction, RspackHasher};
 use rspack_loader_runner::{AdditionalData, Content, Loader, LoaderContext, Scheme};
 use rspack_sources::SourceMap;
-use rspack_util::fx_hash::FxDashMap;
+use rspack_util::{Timestamp, fx_hash::FxDashMap};
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, OnceCell};
@@ -41,7 +41,7 @@ struct LoaderCacheKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct ResourceStamp {
-  mtime_ms: u64,
+  mtime_ms: Timestamp,
   size: u64,
 }
 
@@ -87,7 +87,7 @@ struct PitchData {
   key: LoaderCacheKey,
   digest: String,
   resource: ResourceStamp,
-  started_at_ms: u64,
+  started_at_ms: Timestamp,
   diagnostics_len: usize,
   file_dependencies: FxHashSet<PathBuf>,
   context_dependencies: FxHashSet<PathBuf>,
@@ -347,13 +347,14 @@ fn decode_stored_entry(
   ))
 }
 
-fn now_ms() -> Option<u64> {
-  SystemTime::now()
+fn now_ms() -> Option<Timestamp> {
+  let millis: u64 = SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .ok()?
     .as_millis()
     .try_into()
-    .ok()
+    .ok()?;
+  Some(millis.into())
 }
 
 fn hash_bytes(value: &[u8]) -> u64 {
@@ -397,16 +398,16 @@ async fn resource_stamp(loader_context: &LoaderContext<RunnerContext>) -> Option
     return None;
   }
   Some(ResourceStamp {
-    mtime_ms: metadata.mtime_ms,
+    mtime_ms: metadata.mtime_ms.into(),
     size: metadata.size,
   })
 }
 
-fn mtime_is_reliable(mtime_ms: u64, started_at_ms: u64) -> bool {
+fn mtime_is_reliable(mtime: Timestamp, started_at: Timestamp) -> bool {
   // Match cache-loader's conservative handling for coarse filesystems: when
   // the resource mtime is in the same second as this cache attempt (or later),
   // it may have changed without producing a distinguishable timestamp.
-  mtime_ms / 1000 < started_at_ms / 1000
+  mtime.as_millis() / 1000 < started_at.as_millis() / 1000
 }
 
 fn dependency_delta(
@@ -605,7 +606,7 @@ mod tests {
   fn entry() -> LoaderCacheEntry {
     LoaderCacheEntry {
       resource: ResourceStamp {
-        mtime_ms: 1,
+        mtime_ms: 1.into(),
         size: 3,
       },
       content: Some(Content::Buffer(vec![1, 2, 3])),
@@ -657,8 +658,8 @@ mod tests {
 
   #[test]
   fn rejects_mtime_from_the_cache_attempt_second_or_later() {
-    assert!(mtime_is_reliable(9_999, 10_000));
-    assert!(!mtime_is_reliable(10_000, 10_999));
-    assert!(!mtime_is_reliable(11_000, 10_999));
+    assert!(mtime_is_reliable(9_999.into(), 10_000.into()));
+    assert!(!mtime_is_reliable(10_000.into(), 10_999.into()));
+    assert!(!mtime_is_reliable(11_000.into(), 10_999.into()));
   }
 }
