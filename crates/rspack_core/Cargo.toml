@@ -34,7 +34,7 @@ once_cell                  = { workspace = true }
 paste                      = { workspace = true }
 rayon                      = { workspace = true }
 regex                      = { workspace = true }
-rkyv                       = { workspace = true, optional = true }
+rkyv                       = { workspace = true }
 rspack_cacheable           = { workspace = true }
 rspack_collections         = { workspace = true }
 rspack_dojang              = { workspace = true }
@@ -87,4 +87,4 @@ workspace = true
 codspeed   = ["rspack_parallel/codspeed"]
 debug_tool = ["rspack_util/debug_tool"]
 default    = []
-napi       = ["dep:napi", "dep:rspack_napi", "dep:rkyv"]
+napi       = ["dep:napi", "dep:rspack_napi"]

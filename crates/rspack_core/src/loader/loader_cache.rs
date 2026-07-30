@@ -7,6 +7,10 @@ use std::{
 };
 
 use async_trait::async_trait;
+use rkyv::{
+  self, Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize,
+  rancor::Error as RkyvError, util::AlignedVec,
+};
 use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_collections::Identifiable;
 use rspack_error::Result;
@@ -29,7 +33,9 @@ const LOCK_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 static TEMP_FILE_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+  Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
 struct LoaderCacheKey {
   rspack_version: String,
   compiler_scope: String,
@@ -61,23 +67,30 @@ struct LoaderCacheEntry {
   build_dependencies: DependencyDelta,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
 enum PersistedContent {
   String(String),
   Buffer(Vec<u8>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
+struct PersistedDependencyDelta {
+  added: Vec<String>,
+  removed: Vec<String>,
+}
+
+#[derive(Archive, RkyvDeserialize, RkyvSerialize, Debug, Clone)]
 struct PersistedPayload {
   version: u8,
   identity: LoaderCacheKey,
-  resource: ResourceStamp,
+  resource_mtime_ms: u64,
+  resource_size: u64,
   content: PersistedContent,
   source_map: Option<String>,
-  file_dependencies: DependencyDelta,
-  context_dependencies: DependencyDelta,
-  missing_dependencies: DependencyDelta,
-  build_dependencies: DependencyDelta,
+  file_dependencies: PersistedDependencyDelta,
+  context_dependencies: PersistedDependencyDelta,
+  missing_dependencies: PersistedDependencyDelta,
+  build_dependencies: PersistedDependencyDelta,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,7 +118,7 @@ impl LoaderCacheFileStore {
   }
 
   fn entry_path(&self, digest: &str) -> PathBuf {
-    self.root.join(format!("{digest}.json")).into_std_path_buf()
+    self.root.join(format!("{digest}.rkyv")).into_std_path_buf()
   }
 
   fn lock_path(&self, digest: &str) -> PathBuf {
@@ -202,7 +215,7 @@ fn write_atomic_with_lock(
   fs::create_dir_all(parent)?;
   let _lock = acquire_file_lock(lock_path)?;
   let temp_id = TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
-  let temp_path = entry_path.with_extension(format!("json.tmp.{}.{}", std::process::id(), temp_id));
+  let temp_path = entry_path.with_extension(format!("rkyv.tmp.{}.{}", std::process::id(), temp_id));
   let result = (|| {
     let mut file = OpenOptions::new()
       .write(true)
@@ -358,28 +371,61 @@ impl LoaderCacheService {
 }
 
 fn encode_entry(key: LoaderCacheKey, entry: LoaderCacheEntry) -> Option<Vec<u8>> {
+  encode_entry_with_version(key, entry, FORMAT_VERSION)
+}
+
+fn encode_entry_with_version(
+  key: LoaderCacheKey,
+  entry: LoaderCacheEntry,
+  version: u8,
+) -> Option<Vec<u8>> {
   let content = match entry.content? {
     Content::String(value) => PersistedContent::String(value),
     Content::Buffer(value) => PersistedContent::Buffer(value),
   };
   let payload = PersistedPayload {
-    version: FORMAT_VERSION,
+    version,
     identity: key,
-    resource: entry.resource,
+    resource_mtime_ms: entry.resource.mtime_ms.as_millis(),
+    resource_size: entry.resource.size,
     content,
     source_map: entry.source_map,
-    file_dependencies: entry.file_dependencies,
-    context_dependencies: entry.context_dependencies,
-    missing_dependencies: entry.missing_dependencies,
-    build_dependencies: entry.build_dependencies,
+    file_dependencies: encode_dependency_delta(entry.file_dependencies)?,
+    context_dependencies: encode_dependency_delta(entry.context_dependencies)?,
+    missing_dependencies: encode_dependency_delta(entry.missing_dependencies)?,
+    build_dependencies: encode_dependency_delta(entry.build_dependencies)?,
   };
-  serde_json::to_vec(&payload).ok()
+  Some(rkyv::to_bytes::<RkyvError>(&payload).ok()?.to_vec())
+}
+
+fn encode_dependency_delta(delta: DependencyDelta) -> Option<PersistedDependencyDelta> {
+  fn encode_paths(paths: FxHashSet<PathBuf>) -> Option<Vec<String>> {
+    paths
+      .into_iter()
+      .map(|path| path.into_os_string().into_string())
+      .collect::<std::result::Result<_, _>>()
+      .ok()
+  }
+
+  Some(PersistedDependencyDelta {
+    added: encode_paths(delta.added)?,
+    removed: encode_paths(delta.removed)?,
+  })
+}
+
+fn decode_dependency_delta(delta: PersistedDependencyDelta) -> DependencyDelta {
+  DependencyDelta {
+    added: delta.added.into_iter().map(PathBuf::from).collect(),
+    removed: delta.removed.into_iter().map(PathBuf::from).collect(),
+  }
 }
 
 fn decode_stored_entry(
   bytes: &[u8],
 ) -> std::result::Result<(LoaderCacheKey, LoaderCacheEntry), ()> {
-  let payload: PersistedPayload = serde_json::from_slice(bytes).map_err(|_| ())?;
+  let mut aligned = AlignedVec::<16>::new();
+  aligned.extend_from_slice(bytes);
+  let payload = rkyv::from_bytes::<PersistedPayload, RkyvError>(&aligned).map_err(|_| ())?;
   if payload.version != FORMAT_VERSION {
     return Err(());
   }
@@ -391,14 +437,17 @@ fn decode_stored_entry(
   Ok((
     key,
     LoaderCacheEntry {
-      resource: payload.resource,
+      resource: ResourceStamp {
+        mtime_ms: payload.resource_mtime_ms.into(),
+        size: payload.resource_size,
+      },
       content: Some(content),
       source_map: payload.source_map,
       additional_data: None,
-      file_dependencies: payload.file_dependencies,
-      context_dependencies: payload.context_dependencies,
-      missing_dependencies: payload.missing_dependencies,
-      build_dependencies: payload.build_dependencies,
+      file_dependencies: decode_dependency_delta(payload.file_dependencies),
+      context_dependencies: decode_dependency_delta(payload.context_dependencies),
+      missing_dependencies: decode_dependency_delta(payload.missing_dependencies),
+      build_dependencies: decode_dependency_delta(payload.build_dependencies),
     },
   ))
 }
@@ -656,8 +705,8 @@ mod tests {
 
   use super::{
     DependencyDelta, LoaderCacheEntry, LoaderCacheFileStore, LoaderCacheKey, ResourceStamp,
-    decode_stored_entry, dependency_delta, encode_entry, mtime_is_reliable,
-    replay_dependency_delta,
+    decode_stored_entry, dependency_delta, encode_entry, encode_entry_with_version,
+    mtime_is_reliable, replay_dependency_delta,
   };
 
   static TEST_ID: AtomicU64 = AtomicU64::new(0);
@@ -713,7 +762,7 @@ mod tests {
   }
 
   #[test]
-  fn json_entry_round_trips_and_rejects_bad_data() {
+  fn rkyv_entry_round_trips_and_rejects_bad_data() {
     let key = key();
     let bytes = encode_entry(key.clone(), entry()).unwrap();
     let (decoded_key, decoded) = decode_stored_entry(&bytes).unwrap();
@@ -721,9 +770,8 @@ mod tests {
     assert_eq!(decoded.content, Some(Content::Buffer(vec![1, 2, 3])));
 
     assert!(decode_stored_entry(b"{").is_err());
-    let mut payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    payload["version"] = serde_json::json!(0);
-    assert!(decode_stored_entry(&serde_json::to_vec(&payload).unwrap()).is_err());
+    let invalid_version = encode_entry_with_version(key, entry(), 0).unwrap();
+    assert!(decode_stored_entry(&invalid_version).is_err());
   }
 
   #[tokio::test]
@@ -733,7 +781,7 @@ mod tests {
     store.put("abcdef", b"cached".to_vec()).await;
 
     assert_eq!(store.get("abcdef").await, Some(b"cached".to_vec()));
-    assert!(root.join("abcdef.json").exists());
+    assert!(root.join("abcdef.rkyv").exists());
     assert!(!root.join("ab").exists());
 
     let _ = std::fs::remove_dir_all(root);
