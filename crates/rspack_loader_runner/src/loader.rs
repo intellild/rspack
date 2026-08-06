@@ -184,6 +184,12 @@ where
   /// Returns the unique identifier for this loader
   fn identifier(&self) -> Identifier;
 
+  /// Whether the result of this individual loader invocation can use the
+  /// loader-result cache.
+  fn cache(&self) -> bool {
+    false
+  }
+
   async fn run(&self, loader_context: &mut LoaderContext<Context>) -> Result<()> {
     // If loader does not implement normal stage,
     // it should inherit the result from the previous loader.

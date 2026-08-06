@@ -19,7 +19,7 @@ use crate::{
   ResolveOptionsWithDependencyType, ResolveResult, ResolvedModuleOptions,
   ResolvedModuleOptionsCacheKey, Resolver, ResolverFactory, ResourceData, ResourceParsedData,
   RunnerContext, RuntimeGlobals, SharedPluginDriver, diagnostics::EmptyDependency,
-  loader::CacheLoader, module_rules_matcher, parse_resource, resolve,
+  loader::CachedLoader, module_rules_matcher, parse_resource, resolve,
   stringify_loaders_and_resource,
 };
 
@@ -1376,7 +1376,7 @@ async fn resolve_each_with_cache(
     return Ok(vec![resolved_loader]);
   }
 
-  Ok(vec![Arc::new(CacheLoader), resolved_loader])
+  Ok(vec![Arc::new(CachedLoader::new(resolved_loader))])
 }
 
 #[derive(Debug)]

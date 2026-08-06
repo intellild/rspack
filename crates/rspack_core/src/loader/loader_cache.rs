@@ -2,7 +2,10 @@ use std::{
   fs::{self, OpenOptions},
   io::{ErrorKind, Write},
   path::{Path, PathBuf},
-  sync::atomic::{AtomicU64, Ordering},
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+  },
   time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -643,22 +646,72 @@ impl Loader<RunnerContext> for CacheLoader {
   }
 }
 
+#[cacheable]
+pub(crate) struct CachedLoader {
+  inner: Arc<dyn Loader<RunnerContext>>,
+}
+
+impl std::fmt::Debug for CachedLoader {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("CachedLoader")
+      .field("identifier", &self.inner.identifier())
+      .finish()
+  }
+}
+
+impl CachedLoader {
+  pub(crate) fn new(inner: Arc<dyn Loader<RunnerContext>>) -> Self {
+    Self { inner }
+  }
+}
+
+#[async_trait]
+#[cacheable_dyn]
+impl Loader<RunnerContext> for CachedLoader {
+  fn identifier(&self) -> rspack_collections::Identifier {
+    self.inner.identifier()
+  }
+
+  fn cache(&self) -> bool {
+    true
+  }
+
+  async fn run(&self, loader_context: &mut LoaderContext<RunnerContext>) -> Result<()> {
+    self.inner.run(loader_context).await
+  }
+
+  async fn pitch(&self, loader_context: &mut LoaderContext<RunnerContext>) -> Result<()> {
+    self.inner.pitch(loader_context).await
+  }
+
+  fn r#type(&self) -> Option<&str> {
+    self.inner.r#type()
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use std::{
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+      Arc,
+      atomic::{AtomicU64, Ordering},
+    },
   };
 
-  use rspack_loader_runner::Content;
+  use async_trait::async_trait;
+  use rspack_cacheable::{cacheable, cacheable_dyn};
+  use rspack_collections::Identifier;
+  use rspack_loader_runner::{Content, Loader};
   use rspack_paths::Utf8PathBuf;
   use rustc_hash::FxHashSet;
 
   use super::{
-    DependencyDelta, LoaderCacheEntry, LoaderCacheFileStore, LoaderCacheKey, ResourceStamp,
-    decode_stored_entry, dependency_delta, encode_entry, mtime_is_reliable,
+    CachedLoader, DependencyDelta, LoaderCacheEntry, LoaderCacheFileStore, LoaderCacheKey,
+    ResourceStamp, decode_stored_entry, dependency_delta, encode_entry, mtime_is_reliable,
     replay_dependency_delta,
   };
+  use crate::RunnerContext;
 
   static TEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -698,6 +751,25 @@ mod tests {
       missing_dependencies: DependencyDelta::default(),
       build_dependencies: DependencyDelta::default(),
     }
+  }
+
+  #[cacheable]
+  #[derive(Debug)]
+  struct TestLoader;
+
+  #[async_trait]
+  #[cacheable_dyn]
+  impl Loader<RunnerContext> for TestLoader {
+    fn identifier(&self) -> Identifier {
+      "test-loader?option=value".into()
+    }
+  }
+
+  #[test]
+  fn cached_loader_is_one_logical_loader() {
+    let loader = CachedLoader::new(Arc::new(TestLoader));
+    assert!(loader.cache());
+    assert_eq!(loader.identifier(), "test-loader?option=value".into());
   }
 
   #[test]

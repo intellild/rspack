@@ -22,7 +22,6 @@ module.exports = {
           {
             loader: path.resolve(__dirname, 'loader.js'),
             options: { name: 'right' },
-            cache: true,
           },
         ],
       },

@@ -8,6 +8,7 @@
  * https://github.com/webpack/loader-runner/blob/main/LICENSE
  */
 import querystring from 'node:querystring';
+import path from 'node:path';
 import {
   formatDiagnostic,
   type JsLoaderContext,
@@ -52,6 +53,7 @@ import {
   parseResourceWithoutFragment,
 } from '../util/identifier';
 import { memoize } from '../util/memoize';
+import { mkdirp } from '../util/fs';
 import { ModuleError, ModuleWarning } from './ModuleError';
 import * as pool from './service';
 import { type HandleIncomingRequest, RequestType } from './service';
@@ -85,6 +87,7 @@ export class LoaderObject {
   raw?: boolean | null;
   type?: 'module' | 'commonjs';
   parallel?: boolean | { maxWorkers?: number };
+  cache: boolean;
   /**
    * @internal This field is rspack internal. Do not edit.
    */
@@ -138,6 +141,7 @@ export class LoaderObject {
           `${this.ident}$$parallelism`,
         ) as LoaderObject['parallel'])
       : false;
+    this.cache = loaderItem.cache;
     this.loaderItem = loaderItem;
     this.loaderItem.data = this.loaderItem.data ?? {};
   }
@@ -186,6 +190,179 @@ export class LoaderObject {
 
   static __to_binding(loader: LoaderObject): JsLoaderItem {
     return loader.loaderItem;
+  }
+}
+
+type DependencyDelta = {
+  added: string[];
+  removed: string[];
+};
+
+type SingleLoaderCacheEntry = {
+  version: 1;
+  content: { type: 'string' | 'buffer'; value: string };
+  sourceMap?: string | object;
+  additionalData?: unknown;
+  fileDependencies: DependencyDelta;
+  contextDependencies: DependencyDelta;
+  missingDependencies: DependencyDelta;
+  buildDependencies: DependencyDelta;
+};
+
+const singleLoaderMemoryCaches = new WeakMap<
+  Compiler,
+  Map<string, SingleLoaderCacheEntry>
+>();
+
+function hashParts(...parts: (string | Buffer)[]) {
+  const hash = createHash('xxhash64');
+  for (const part of parts) {
+    hash.update(typeof part === 'string' ? Buffer.from(part) : part);
+    hash.update(Buffer.from([0]));
+  }
+  return hash.digest('hex');
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(',')}}`;
+}
+
+function dependencyDelta(before: string[], after: string[]): DependencyDelta {
+  const beforeSet = new Set(before);
+  const afterSet = new Set(after);
+  return {
+    added: [...afterSet].filter((dependency) => !beforeSet.has(dependency)),
+    removed: [...beforeSet].filter((dependency) => !afterSet.has(dependency)),
+  };
+}
+
+function replayDependencyDelta(target: string[], delta: DependencyDelta) {
+  const removed = new Set(delta.removed);
+  const next = target.filter((dependency) => !removed.has(dependency));
+  const seen = new Set(next);
+  for (const dependency of delta.added) {
+    if (!seen.has(dependency)) next.push(dependency);
+  }
+  target.splice(0, target.length, ...next);
+}
+
+function singleLoaderCacheRoot(compiler: Compiler): string | undefined {
+  const cache = compiler.options.cache;
+  if (!cache || cache.type !== 'persistent') return undefined;
+  return path.join(
+    cache.storage.directory!,
+    'loader-cache',
+    'single-loader-v1',
+    hashParts(cache.version ?? ''),
+  );
+}
+
+function cacheEntryContent(content: string | Buffer | Uint8Array) {
+  if (typeof content === 'string') {
+    return { type: 'string' as const, value: content };
+  }
+  return {
+    type: 'buffer' as const,
+    value: toBuffer(content).toString('base64'),
+  };
+}
+
+function restoreEntryContent(entry: SingleLoaderCacheEntry) {
+  return entry.content.type === 'string'
+    ? entry.content.value
+    : Buffer.from(entry.content.value, 'base64');
+}
+
+async function readSingleLoaderCache(
+  compiler: Compiler,
+  loader: LoaderObject,
+  content: string | Buffer | Uint8Array,
+): Promise<SingleLoaderCacheEntry | undefined> {
+  const input =
+    typeof content === 'string' ? Buffer.from(content) : toBuffer(content);
+  const optionsHash = hashParts(stableStringify(loader.options ?? null));
+  const key = hashParts(input, optionsHash);
+  const namespace = hashParts(loader.path);
+  const memoryKey = `${namespace}/${key}`;
+  let memory = singleLoaderMemoryCaches.get(compiler);
+  if (!memory) {
+    memory = new Map();
+    singleLoaderMemoryCaches.set(compiler, memory);
+  }
+  const memoryEntry = memory.get(memoryKey);
+  if (memoryEntry) return memoryEntry;
+
+  const root = singleLoaderCacheRoot(compiler);
+  const fileSystem = compiler.outputFileSystem;
+  if (!root || !fileSystem) return undefined;
+  try {
+    const value = await new Promise<string | Buffer>((resolve, reject) => {
+      fileSystem.readFile(
+        path.join(root, namespace, `${key}.json`),
+        (error, content) => {
+          if (error || content === undefined) reject(error);
+          else resolve(content);
+        },
+      );
+    });
+    const entry = JSON.parse(value.toString()) as SingleLoaderCacheEntry;
+    if (entry.version !== 1) return undefined;
+    memory.set(memoryKey, entry);
+    return entry;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeSingleLoaderCache(
+  compiler: Compiler,
+  loader: LoaderObject,
+  input: string | Buffer | Uint8Array,
+  entry: SingleLoaderCacheEntry,
+) {
+  const inputBuffer =
+    typeof input === 'string' ? Buffer.from(input) : toBuffer(input);
+  const optionsHash = hashParts(stableStringify(loader.options ?? null));
+  const key = hashParts(inputBuffer, optionsHash);
+  const namespace = hashParts(loader.path);
+  let memory = singleLoaderMemoryCaches.get(compiler);
+  if (!memory) {
+    memory = new Map();
+    singleLoaderMemoryCaches.set(compiler, memory);
+  }
+  memory.set(`${namespace}/${key}`, entry);
+
+  const cache = compiler.options.cache;
+  const root = singleLoaderCacheRoot(compiler);
+  if (!root || !cache || cache.type !== 'persistent' || cache.readonly) return;
+  const directory = path.join(root, namespace);
+  const target = path.join(directory, `${key}.json`);
+  const fileSystem = compiler.outputFileSystem;
+  if (!fileSystem) return;
+  try {
+    const value = JSON.stringify(entry);
+    await new Promise<void>((resolve, reject) => {
+      mkdirp(fileSystem, directory, (error) =>
+        error ? reject(error) : resolve(),
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      fileSystem.writeFile(target, value, (error) =>
+        error ? reject(error) : resolve(),
+      );
+    });
+  } catch {
+    // A cache write failure must not fail the compilation.
   }
 }
 
@@ -1041,7 +1218,7 @@ export async function runLoaders(
         break;
       }
       case JsLoaderState.Normal: {
-        let content = context.content;
+        let content: string | Buffer | null = context.content;
         const rawSourceMap = context.sourceMap;
         let sourceMap: string | object | undefined;
         let sourceMapParsed = false;
@@ -1073,11 +1250,72 @@ export async function runLoaders(
             sourceMapParsed = true;
           }
 
+          const input = content;
+          const fileDependenciesBefore = fileDependencies.slice();
+          const contextDependenciesBefore = contextDependencies.slice();
+          const missingDependenciesBefore = missingDependencies.slice();
+          const buildDependenciesBefore = buildDependencies.slice();
+          const cached =
+            currentLoaderObject.cache && !isNil(input)
+              ? await readSingleLoaderCache(
+                  compiler,
+                  currentLoaderObject,
+                  input,
+                )
+              : undefined;
+
+          if (cached) {
+            content = restoreEntryContent(cached);
+            sourceMap = cached.sourceMap;
+            additionalData = cached.additionalData;
+            replayDependencyDelta(fileDependencies, cached.fileDependencies);
+            replayDependencyDelta(
+              contextDependencies,
+              cached.contextDependencies,
+            );
+            replayDependencyDelta(
+              missingDependencies,
+              cached.missingDependencies,
+            );
+            replayDependencyDelta(buildDependencies, cached.buildDependencies);
+            continue;
+          }
+
           [content, sourceMap, additionalData] = await isomorphoicRun(fn, [
             content,
             sourceMap,
             additionalData,
           ]);
+
+          if (
+            currentLoaderObject.cache &&
+            context.cacheable &&
+            !isNil(input) &&
+            !isNil(content)
+          ) {
+            await writeSingleLoaderCache(compiler, currentLoaderObject, input, {
+              version: 1,
+              content: cacheEntryContent(content),
+              sourceMap,
+              additionalData,
+              fileDependencies: dependencyDelta(
+                fileDependenciesBefore,
+                fileDependencies,
+              ),
+              contextDependencies: dependencyDelta(
+                contextDependenciesBefore,
+                contextDependencies,
+              ),
+              missingDependencies: dependencyDelta(
+                missingDependenciesBefore,
+                missingDependencies,
+              ),
+              buildDependencies: dependencyDelta(
+                buildDependenciesBefore,
+                buildDependencies,
+              ),
+            });
+          }
         }
 
         context.content = isNil(content) ? null : toBuffer(content);

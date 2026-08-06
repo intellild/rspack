@@ -3088,7 +3088,7 @@ export type UseInputFileSystem = false | RegExp[];
  */
 export type Experiments = {
   /**
-   * Enable loader result caching for rule use entries with `cache: true`.
+   * Enable individual loader result caching for rule use entries with `cache: true`.
    * @default false
    */
   loaderCache?: boolean;

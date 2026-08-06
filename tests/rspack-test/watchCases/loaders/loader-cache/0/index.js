@@ -1,23 +1,12 @@
 const value = require('./value');
 
-it('should cache a loader segment until the resource changes', () => {
-  if (+WATCH_STEP < 3) {
-    expect(value).toEqual({
-      value: 'initial',
-      leftRuns: +WATCH_STEP + 1,
-      markedRuns: 1,
-      rightRuns: 1,
-      sourceMap: true,
-      additionalData: true,
-    });
-  } else {
-    expect(value).toEqual({
-      value: 'changed',
-      leftRuns: 4,
-      markedRuns: 2,
-      rightRuns: 2,
-      sourceMap: true,
-      additionalData: true,
-    });
-  }
+it('should invalidate one loader when its input changes', () => {
+  expect(value).toEqual({
+    value: +WATCH_STEP < 3 ? 'initial' : 'changed',
+    leftRuns: +WATCH_STEP + 1,
+    markedRuns: +WATCH_STEP + 1,
+    rightRuns: +WATCH_STEP + 1,
+    sourceMap: true,
+    additionalData: true,
+  });
 });

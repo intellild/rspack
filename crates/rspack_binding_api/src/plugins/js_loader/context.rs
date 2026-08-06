@@ -15,6 +15,7 @@ use crate::{error::RspackError, module::ModuleObject};
 pub struct JsLoaderItem {
   pub loader: String,
   pub r#type: String,
+  pub cache: bool,
 
   // data
   pub data: serde_json::Value,
@@ -31,6 +32,7 @@ impl From<&rspack_loader_runner::LoaderItem<RunnerContext>> for JsLoaderItem {
     JsLoaderItem {
       loader: value.request().to_string(),
       r#type: value.r#type().to_string(),
+      cache: value.loader().cache(),
 
       data: value.data().clone(),
       normal_executed: value.normal_executed(),
@@ -53,6 +55,7 @@ where
         loader: ident.to_string(),
         data: serde_json::Value::Null,
         r#type: r#type.to_string(),
+        cache: loader.cache(),
         pitch_executed: false,
         normal_executed: false,
         no_pitch: false,
@@ -62,6 +65,7 @@ where
       loader: identifier.to_string(),
       data: serde_json::Value::Null,
       r#type: String::default(),
+      cache: loader.cache(),
       pitch_executed: false,
       normal_executed: false,
       no_pitch: false,

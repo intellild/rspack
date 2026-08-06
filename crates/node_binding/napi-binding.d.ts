@@ -971,6 +971,7 @@ export interface JsLoaderContext {
 export interface JsLoaderItem {
   loader: string
   type: string
+  cache: boolean
   data: any
   normalExecuted: boolean
   pitchExecuted: boolean

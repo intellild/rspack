@@ -1694,7 +1694,7 @@ pub struct ModuleRuleUseLoader {
   /// Loader options
   /// This only exists if the loader is a built-in loader.
   pub options: Option<String>,
-  /// Cache this loader and the remaining loader chain in memory.
+  /// Cache this individual loader's result by its input source and options.
   pub cache: bool,
 }
 
