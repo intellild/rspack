@@ -4,7 +4,7 @@ use std::{
   path::{Path, PathBuf},
   sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
   },
   time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -43,6 +43,43 @@ struct SingleLoaderCacheMetrics {
   deserialize_nanos: AtomicU64,
   read_files: AtomicU64,
   read_bytes: AtomicU64,
+  stores: AtomicU64,
+  reported: AtomicBool,
+  expected_entries: Option<u64>,
+}
+
+impl SingleLoaderCacheMetrics {
+  fn new() -> Self {
+    Self {
+      expected_entries: std::env::var("RSPACK_LOADER_CACHE_BENCH_EXPECTED_ENTRIES")
+        .ok()
+        .and_then(|value| value.parse().ok()),
+      ..Default::default()
+    }
+  }
+
+  fn report_if_complete(&self) {
+    let Some(expected_entries) = self.expected_entries else {
+      return;
+    };
+    if self.hits.load(Ordering::Acquire) + self.stores.load(Ordering::Acquire) < expected_entries
+      || self.reported.swap(true, Ordering::AcqRel)
+    {
+      return;
+    }
+    eprintln!(
+      "RSPACK_LOADER_CACHE_BENCH_STATS {}",
+      serde_json::json!({
+        "hits": self.hits.load(Ordering::Relaxed),
+        "misses": self.misses.load(Ordering::Relaxed),
+        "jsYields": self.js_yields.load(Ordering::Relaxed),
+        "hashNanos": self.hash_nanos.load(Ordering::Relaxed),
+        "deserializeNanos": self.deserialize_nanos.load(Ordering::Relaxed),
+        "readFiles": self.read_files.load(Ordering::Relaxed),
+        "readBytes": self.read_bytes.load(Ordering::Relaxed),
+      })
+    );
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -324,27 +361,6 @@ pub(crate) struct LoaderCacheService {
   file_store: Option<LoaderCacheFileStore>,
 }
 
-impl Drop for LoaderCacheService {
-  fn drop(&mut self) {
-    if std::env::var_os("RSPACK_LOADER_CACHE_BENCH_STATS").is_none() {
-      return;
-    }
-    let metrics = &self.metrics;
-    eprintln!(
-      "RSPACK_LOADER_CACHE_BENCH_STATS {}",
-      serde_json::json!({
-        "hits": metrics.hits.load(Ordering::Relaxed),
-        "misses": metrics.misses.load(Ordering::Relaxed),
-        "jsYields": metrics.js_yields.load(Ordering::Relaxed),
-        "hashNanos": metrics.hash_nanos.load(Ordering::Relaxed),
-        "deserializeNanos": metrics.deserialize_nanos.load(Ordering::Relaxed),
-        "readFiles": metrics.read_files.load(Ordering::Relaxed),
-        "readBytes": metrics.read_bytes.load(Ordering::Relaxed),
-      })
-    );
-  }
-}
-
 impl LoaderCacheService {
   pub(crate) fn from_compiler_options(
     compiler_path: &str,
@@ -383,7 +399,7 @@ impl LoaderCacheService {
       compiler_scope,
       entries: FxDashMap::default(),
       single_entries: FxDashMap::default(),
-      metrics: SingleLoaderCacheMetrics::default(),
+      metrics: SingleLoaderCacheMetrics::new(),
       file_store,
     }
   }
@@ -454,6 +470,7 @@ impl LoaderCacheService {
       .map(|entry| entry.value().clone())
     {
       self.metrics.hits.fetch_add(1, Ordering::Relaxed);
+      self.metrics.report_if_complete();
       return Some(entry);
     }
     let Some(file_store) = self.file_store.as_ref() else {
@@ -484,6 +501,7 @@ impl LoaderCacheService {
       }
     };
     self.metrics.hits.fetch_add(1, Ordering::Relaxed);
+    self.metrics.report_if_complete();
     self.single_entries.insert(key.clone(), entry.clone());
     Some(entry)
   }
@@ -501,6 +519,8 @@ impl LoaderCacheService {
     if let Some(bytes) = encode_single_entry(key, entry) {
       file_store.put(&digest, bytes).await;
     }
+    self.metrics.stores.fetch_add(1, Ordering::Release);
+    self.metrics.report_if_complete();
   }
 
   async fn remove_single(&self, key: &SingleLoaderCacheKey, digest: &str) {
