@@ -10,6 +10,12 @@ use crate::{
   content::{Content, ResourceData},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalLoaderDecision {
+  Continue,
+  Executed,
+}
+
 #[async_trait::async_trait]
 pub trait LoaderRunnerPlugin: Send + Sync {
   type Context: Send;
@@ -27,6 +33,17 @@ pub trait LoaderRunnerPlugin: Send + Sync {
   }
 
   async fn start_yielding(&self, _context: &mut LoaderContext<Self::Context>) -> Result<()> {
+    Ok(())
+  }
+
+  async fn before_normal(
+    &self,
+    _context: &mut LoaderContext<Self::Context>,
+  ) -> Result<NormalLoaderDecision> {
+    Ok(NormalLoaderDecision::Continue)
+  }
+
+  async fn after_normal(&self, _context: &mut LoaderContext<Self::Context>) -> Result<()> {
     Ok(())
   }
 

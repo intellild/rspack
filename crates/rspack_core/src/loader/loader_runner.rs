@@ -4,6 +4,7 @@ use rspack_fs::ReadableFileSystem;
 pub use rspack_loader_runner::{Content, Loader, LoaderContext, run_loaders};
 use rspack_util::source_map::SourceMapKind;
 
+use super::loader_cache::SingleLoaderCacheMiss;
 use crate::{
   CompilationId, CompilerId, CompilerOptions, NormalModule, ResolverFactory,
   loader::LoaderCacheService,
@@ -19,6 +20,7 @@ pub struct RunnerContext {
   pub module: Box<NormalModule>,
   pub source_map_kind: SourceMapKind,
   pub(crate) loader_cache: Option<Arc<LoaderCacheService>>,
+  pub(crate) single_loader_cache_miss: Option<SingleLoaderCacheMiss>,
 }
 
 pub type BoxLoader = Arc<dyn for<'a> Loader<RunnerContext>>;

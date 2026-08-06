@@ -50,6 +50,7 @@ pub struct RawModuleRuleUse {
   pub loader: String,
   pub options: Option<String>,
   pub cache: bool,
+  pub options_hash: Option<String>,
 }
 
 #[rspack_napi_macros::tagged_union]
@@ -1023,6 +1024,7 @@ impl TryFrom<RawModuleRule> for ModuleRule {
             loader: rule_use.loader,
             options: rule_use.options,
             cache: rule_use.cache,
+            options_hash: rule_use.options_hash,
           })
           .collect::<Vec<_>>();
         Ok::<ModuleRuleUse, rspack_error::Error>(ModuleRuleUse::Array(uses))
@@ -1038,6 +1040,7 @@ impl TryFrom<RawModuleRule> for ModuleRule {
                   loader: rule_use.loader,
                   options: rule_use.options,
                   cache: rule_use.cache,
+                  options_hash: rule_use.options_hash,
                 })
                 .collect::<Vec<_>>()
             })

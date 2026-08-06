@@ -959,6 +959,7 @@ export interface JsLoaderContext {
   buildDependencies: Array<string>
   loaderItems: Array<JsLoaderItem>
   loaderIndex: number
+  __internal__runLoaderCount?: number
   loaderState: Readonly<JsLoaderState>
   __internal__error?: RspackError
   /**
@@ -2741,6 +2742,7 @@ export interface RawModuleRuleUse {
   loader: string
   options?: string
   cache: boolean
+  optionsHash?: string
 }
 
 export interface RawNodeOption {

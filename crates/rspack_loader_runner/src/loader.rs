@@ -190,6 +190,11 @@ where
     false
   }
 
+  /// Stable fingerprint of the effective loader options.
+  fn options_hash(&self) -> Option<&str> {
+    None
+  }
+
   async fn run(&self, loader_context: &mut LoaderContext<Context>) -> Result<()> {
     // If loader does not implement normal stage,
     // it should inherit the result from the previous loader.

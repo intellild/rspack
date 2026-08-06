@@ -855,6 +855,7 @@ impl NormalModuleFactory {
                 .map(|object| object.to_string())
             }),
             cache: false,
+            options_hash: None,
           }
         }));
         scheme = get_scheme(unresolved_resource);
@@ -1376,7 +1377,10 @@ async fn resolve_each_with_cache(
     return Ok(vec![resolved_loader]);
   }
 
-  Ok(vec![Arc::new(CachedLoader::new(resolved_loader))])
+  Ok(vec![Arc::new(CachedLoader::new(
+    resolved_loader,
+    loader.options_hash.clone().unwrap_or_default(),
+  ))])
 }
 
 #[derive(Debug)]

@@ -12,7 +12,7 @@ use crate::{
   content::{AdditionalData, Content, ResourceData},
   context::{LoaderContext, State},
   loader::{Loader, LoaderItem},
-  plugin::LoaderRunnerPlugin,
+  plugin::{LoaderRunnerPlugin, NormalLoaderDecision},
 };
 
 impl<Context: Send> LoaderContext<Context> {
@@ -170,13 +170,24 @@ async fn run_loaders_impl<Context: Send>(
           cx.state.transition(State::Finished);
           continue;
         }
-        let span = info_span!("run_loader:yield_to_js", resource);
-        if cx.start_yielding().instrument(span).await? {
-          continue;
-        }
 
         if cx.current_loader().normal_executed() {
           cx.loader_index -= 1;
+          continue;
+        }
+
+        if let Some(plugin) = cx.plugin.clone()
+          && plugin.before_normal(cx).await? == NormalLoaderDecision::Executed
+        {
+          cx.loader_index -= 1;
+          continue;
+        }
+
+        let span = info_span!("run_loader:yield_to_js", resource);
+        if cx.start_yielding().instrument(span).await? {
+          if let Some(plugin) = cx.plugin.clone() {
+            plugin.after_normal(cx).await?;
+          }
           continue;
         }
 
@@ -190,6 +201,9 @@ async fn run_loaders_impl<Context: Send>(
           // we set everything to [None] and move to the next loader.
           // This mocks the behavior of webpack loader-runner.
           cx.finish_with_empty();
+        }
+        if let Some(plugin) = cx.plugin.clone() {
+          plugin.after_normal(cx).await?;
         }
       }
       State::Finished => break,

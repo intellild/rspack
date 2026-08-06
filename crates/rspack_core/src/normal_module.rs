@@ -424,6 +424,7 @@ impl Module for NormalModule {
         fs: fs.clone(),
         source_map_kind: self.source_map_kind,
         loader_cache: build_context.plugin_driver.loader_cache_service.clone(),
+        single_loader_cache_miss: None,
         module: self,
       },
       fs,

@@ -114,6 +114,8 @@ pub struct JsLoaderContext {
 
   pub loader_items: Vec<JsLoaderItem>,
   pub loader_index: i32,
+  #[napi(js_name = "__internal__runLoaderCount")]
+  pub run_loader_count: Option<u32>,
   #[napi(ts_type = "Readonly<JsLoaderState>")]
   pub loader_state: JsLoaderState,
   #[napi(js_name = "__internal__error")]
@@ -180,6 +182,8 @@ impl TryFrom<&mut LoaderContext<RunnerContext>> for JsLoaderContext {
 
       loader_items: cx.loader_items.iter().map(Into::into).collect(),
       loader_index: cx.loader_index,
+      run_loader_count: (cx.state() == LoaderState::Normal && cx.current_loader().loader().cache())
+        .then_some(1),
       loader_state: cx.state().into(),
       error: None,
       utf8_hint: None,

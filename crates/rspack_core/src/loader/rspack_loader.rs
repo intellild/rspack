@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use rspack_error::{Diagnostic, Result};
 use rspack_fs::ReadableFileSystem;
-use rspack_loader_runner::{Content, LoaderContext, LoaderRunnerPlugin, ResourceData};
+use rspack_loader_runner::{
+  Content, LoaderContext, LoaderRunnerPlugin, NormalLoaderDecision, ResourceData,
+};
 use rspack_sources::SourceMap;
 use rustc_hash::FxHashSet as HashSet;
 
@@ -120,5 +122,22 @@ impl LoaderRunnerPlugin for RspackLoaderRunnerPlugin {
       .loader_yield
       .call(context)
       .await
+  }
+
+  async fn before_normal(
+    &self,
+    context: &mut LoaderContext<Self::Context>,
+  ) -> Result<NormalLoaderDecision> {
+    let Some(cache) = context.context.loader_cache.clone() else {
+      return Ok(NormalLoaderDecision::Continue);
+    };
+    cache.before_normal(context).await
+  }
+
+  async fn after_normal(&self, context: &mut LoaderContext<Self::Context>) -> Result<()> {
+    let Some(cache) = context.context.loader_cache.clone() else {
+      return Ok(());
+    };
+    cache.after_normal(context).await
   }
 }

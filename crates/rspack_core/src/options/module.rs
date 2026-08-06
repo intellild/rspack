@@ -1696,6 +1696,9 @@ pub struct ModuleRuleUseLoader {
   pub options: Option<String>,
   /// Cache this individual loader's result by its input source and options.
   pub cache: bool,
+  /// Stable hash of the effective loader options, computed while the original
+  /// JavaScript options object is still available.
+  pub options_hash: Option<String>,
 }
 
 pub type FnUse =

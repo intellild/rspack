@@ -14,7 +14,9 @@ use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_collections::Identifiable;
 use rspack_error::Result;
 use rspack_hash::{HashFunction, RspackHasher};
-use rspack_loader_runner::{AdditionalData, Content, Loader, LoaderContext, Scheme};
+use rspack_loader_runner::{
+  AdditionalData, Content, Loader, LoaderContext, NormalLoaderDecision, Scheme,
+};
 use rspack_paths::Utf8PathBuf;
 use rspack_sources::SourceMap;
 use rspack_util::{Timestamp, fx_hash::FxDashMap};
@@ -62,6 +64,52 @@ struct LoaderCacheEntry {
   context_dependencies: DependencyDelta,
   missing_dependencies: DependencyDelta,
   build_dependencies: DependencyDelta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct SingleLoaderCacheKey {
+  format_version: u8,
+  rspack_version: String,
+  compiler_scope: String,
+  loader_identifier: String,
+  options_hash: String,
+  input_hash: String,
+  loader_mtime_ms: Option<u64>,
+  loader_size: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct SingleLoaderCacheEntry {
+  content: Content,
+  source_map: Option<String>,
+  file_dependencies: DependencyDelta,
+  context_dependencies: DependencyDelta,
+  missing_dependencies: DependencyDelta,
+  build_dependencies: DependencyDelta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SingleLoaderPersistedPayload {
+  version: u8,
+  identity: SingleLoaderCacheKey,
+  content: PersistedContent,
+  source_map: Option<String>,
+  file_dependencies: DependencyDelta,
+  context_dependencies: DependencyDelta,
+  missing_dependencies: DependencyDelta,
+  build_dependencies: DependencyDelta,
+}
+
+#[derive(Debug)]
+pub(crate) struct SingleLoaderCacheMiss {
+  key: SingleLoaderCacheKey,
+  digest: String,
+  loader_index: i32,
+  diagnostics_len: usize,
+  file_dependencies: FxHashSet<PathBuf>,
+  context_dependencies: FxHashSet<PathBuf>,
+  missing_dependencies: FxHashSet<PathBuf>,
+  build_dependencies: FxHashSet<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +308,7 @@ fn remove_with_lock(
 pub(crate) struct LoaderCacheService {
   compiler_scope: String,
   entries: FxDashMap<LoaderCacheKey, LoaderCacheEntry>,
+  single_entries: FxDashMap<SingleLoaderCacheKey, SingleLoaderCacheEntry>,
   file_store: Option<LoaderCacheFileStore>,
 }
 
@@ -300,6 +349,7 @@ impl LoaderCacheService {
     Self {
       compiler_scope,
       entries: FxDashMap::default(),
+      single_entries: FxDashMap::default(),
       file_store,
     }
   }
@@ -358,6 +408,95 @@ impl LoaderCacheService {
       file_store.remove(digest).await;
     }
   }
+
+  async fn lookup_single(
+    &self,
+    key: &SingleLoaderCacheKey,
+    digest: &str,
+  ) -> Option<SingleLoaderCacheEntry> {
+    if let Some(entry) = self
+      .single_entries
+      .get(key)
+      .map(|entry| entry.value().clone())
+    {
+      return Some(entry);
+    }
+    let file_store = self.file_store.as_ref()?;
+    let bytes = file_store.get(digest).await?;
+    let entry = match decode_single_entry(&bytes, key) {
+      Ok(entry) => entry,
+      Err(()) => {
+        file_store.remove_if_unchanged(digest, bytes).await;
+        return None;
+      }
+    };
+    self.single_entries.insert(key.clone(), entry.clone());
+    Some(entry)
+  }
+
+  async fn store_single(
+    &self,
+    key: SingleLoaderCacheKey,
+    digest: String,
+    entry: SingleLoaderCacheEntry,
+  ) {
+    self.single_entries.insert(key.clone(), entry.clone());
+    let Some(file_store) = &self.file_store else {
+      return;
+    };
+    if let Some(bytes) = encode_single_entry(key, entry) {
+      file_store.put(&digest, bytes).await;
+    }
+  }
+
+  async fn remove_single(&self, key: &SingleLoaderCacheKey, digest: &str) {
+    self.single_entries.remove(key);
+    if let Some(file_store) = &self.file_store {
+      file_store.remove(digest).await;
+    }
+  }
+}
+
+fn encode_single_entry(
+  key: SingleLoaderCacheKey,
+  entry: SingleLoaderCacheEntry,
+) -> Option<Vec<u8>> {
+  let content = match entry.content {
+    Content::String(value) => PersistedContent::String(value),
+    Content::Buffer(value) => PersistedContent::Buffer(value),
+  };
+  serde_json::to_vec(&SingleLoaderPersistedPayload {
+    version: FORMAT_VERSION,
+    identity: key,
+    content,
+    source_map: entry.source_map,
+    file_dependencies: entry.file_dependencies,
+    context_dependencies: entry.context_dependencies,
+    missing_dependencies: entry.missing_dependencies,
+    build_dependencies: entry.build_dependencies,
+  })
+  .ok()
+}
+
+fn decode_single_entry(
+  bytes: &[u8],
+  expected_key: &SingleLoaderCacheKey,
+) -> std::result::Result<SingleLoaderCacheEntry, ()> {
+  let payload: SingleLoaderPersistedPayload = serde_json::from_slice(bytes).map_err(|_| ())?;
+  if payload.version != FORMAT_VERSION || &payload.identity != expected_key {
+    return Err(());
+  }
+  Ok(SingleLoaderCacheEntry {
+    content: match payload.content {
+      PersistedContent::String(value) => Content::String(value),
+      PersistedContent::Buffer(value) => Content::Buffer(value),
+    },
+    source_map: payload.source_map,
+    file_dependencies: payload.file_dependencies,
+    context_dependencies: payload.context_dependencies,
+    missing_dependencies: payload.missing_dependencies,
+    build_dependencies: payload.build_dependencies,
+  })
 }
 
 fn encode_entry(key: LoaderCacheKey, entry: LoaderCacheEntry) -> Option<Vec<u8>> {
@@ -431,6 +570,190 @@ fn hash_bytes(value: &[u8]) -> u64 {
   let mut hasher = RspackHasher::new(&HashFunction::Xxhash64);
   hasher.write(value);
   hasher.finish()
+}
+
+fn content_hash(content: &Content) -> String {
+  let mut hasher = RspackHasher::new(&HashFunction::Xxhash64);
+  match content {
+    Content::String(value) => {
+      hasher.write(&[0]);
+      hasher.write(value.as_bytes());
+    }
+    Content::Buffer(value) => {
+      hasher.write(&[1]);
+      hasher.write(value);
+    }
+  }
+  format!("{:016x}", hasher.finish())
+}
+
+async fn current_loader_stamp(
+  loader_context: &LoaderContext<RunnerContext>,
+) -> Option<ResourceStamp> {
+  let path = loader_context.current_loader().path();
+  if !path.is_absolute() {
+    return None;
+  }
+  let metadata = loader_context.context.fs.metadata(path).await.ok()?;
+  metadata.is_file.then_some(ResourceStamp {
+    mtime_ms: metadata.mtime_ms.into(),
+    size: metadata.size,
+  })
+}
+
+async fn single_loader_cache_key(
+  loader_context: &LoaderContext<RunnerContext>,
+  service: &LoaderCacheService,
+) -> Option<(SingleLoaderCacheKey, String)> {
+  let loader = loader_context.current_loader().loader();
+  let options_hash = loader.options_hash()?.to_string();
+  let input_hash = content_hash(loader_context.content()?);
+  let loader_stamp = current_loader_stamp(loader_context).await;
+  let key = SingleLoaderCacheKey {
+    format_version: FORMAT_VERSION,
+    rspack_version: env!("CARGO_PKG_VERSION").to_string(),
+    compiler_scope: service.compiler_scope.clone(),
+    loader_identifier: loader.identifier().to_string(),
+    options_hash,
+    input_hash,
+    loader_mtime_ms: loader_stamp.map(|stamp| stamp.mtime_ms.as_millis()),
+    loader_size: loader_stamp.map(|stamp| stamp.size),
+  };
+  let bytes = serde_json::to_vec(&key).ok()?;
+  let digest = format!("single-{:016x}", hash_bytes(&bytes));
+  Some((key, digest))
+}
+
+impl LoaderCacheService {
+  pub(crate) async fn before_normal(
+    &self,
+    loader_context: &mut LoaderContext<RunnerContext>,
+  ) -> Result<NormalLoaderDecision> {
+    loader_context.context.single_loader_cache_miss = None;
+    if !loader_context.current_loader().loader().cache()
+      || !loader_context.cacheable
+      || loader_context.content().is_none()
+      || loader_context.additional_data().is_some()
+    {
+      return Ok(NormalLoaderDecision::Continue);
+    }
+
+    let baseline = SingleLoaderCacheMiss {
+      key: SingleLoaderCacheKey {
+        format_version: FORMAT_VERSION,
+        rspack_version: String::new(),
+        compiler_scope: String::new(),
+        loader_identifier: String::new(),
+        options_hash: String::new(),
+        input_hash: String::new(),
+        loader_mtime_ms: None,
+        loader_size: None,
+      },
+      digest: String::new(),
+      loader_index: loader_context.loader_index,
+      diagnostics_len: loader_context.diagnostics.len(),
+      file_dependencies: loader_context.file_dependencies.clone(),
+      context_dependencies: loader_context.context_dependencies.clone(),
+      missing_dependencies: loader_context.missing_dependencies.clone(),
+      build_dependencies: loader_context.build_dependencies.clone(),
+    };
+
+    let Some((key, digest)) = single_loader_cache_key(loader_context, self).await else {
+      return Ok(NormalLoaderDecision::Continue);
+    };
+
+    if let Some(entry) = self.lookup_single(&key, &digest).await {
+      let source_map = match entry.source_map {
+        Some(source_map) => match SourceMap::from_json(source_map) {
+          Ok(source_map) => Some(source_map),
+          Err(_) => {
+            self.remove_single(&key, &digest).await;
+            loader_context.context.single_loader_cache_miss = Some(SingleLoaderCacheMiss {
+              key,
+              digest,
+              ..baseline
+            });
+            return Ok(NormalLoaderDecision::Continue);
+          }
+        },
+        None => None,
+      };
+      replay_dependency_delta(
+        &mut loader_context.file_dependencies,
+        &entry.file_dependencies,
+      );
+      replay_dependency_delta(
+        &mut loader_context.context_dependencies,
+        &entry.context_dependencies,
+      );
+      replay_dependency_delta(
+        &mut loader_context.missing_dependencies,
+        &entry.missing_dependencies,
+      );
+      replay_dependency_delta(
+        &mut loader_context.build_dependencies,
+        &entry.build_dependencies,
+      );
+      loader_context.finish_with((entry.content, source_map));
+      loader_context.current_loader().set_normal_executed();
+      return Ok(NormalLoaderDecision::Executed);
+    }
+
+    loader_context.context.single_loader_cache_miss = Some(SingleLoaderCacheMiss {
+      key,
+      digest,
+      ..baseline
+    });
+    Ok(NormalLoaderDecision::Continue)
+  }
+
+  pub(crate) async fn after_normal(
+    &self,
+    loader_context: &mut LoaderContext<RunnerContext>,
+  ) -> Result<()> {
+    let Some(miss) = loader_context.context.single_loader_cache_miss.take() else {
+      return Ok(());
+    };
+    if miss.loader_index != loader_context.loader_index
+      || !loader_context.cacheable
+      || loader_context.diagnostics.len() != miss.diagnostics_len
+      || loader_context.additional_data().is_some()
+    {
+      return Ok(());
+    }
+    let Some(content) = loader_context.content().cloned() else {
+      return Ok(());
+    };
+
+    let loader_path = loader_context.current_loader().path();
+    if loader_path.is_absolute() {
+      loader_context
+        .build_dependencies
+        .insert(loader_path.to_path_buf().into_std_path_buf());
+    }
+    let entry = SingleLoaderCacheEntry {
+      content,
+      source_map: loader_context.source_map().map(SourceMap::to_json),
+      file_dependencies: dependency_delta(
+        &miss.file_dependencies,
+        &loader_context.file_dependencies,
+      ),
+      context_dependencies: dependency_delta(
+        &miss.context_dependencies,
+        &loader_context.context_dependencies,
+      ),
+      missing_dependencies: dependency_delta(
+        &miss.missing_dependencies,
+        &loader_context.missing_dependencies,
+      ),
+      build_dependencies: dependency_delta(
+        &miss.build_dependencies,
+        &loader_context.build_dependencies,
+      ),
+    };
+    self.store_single(miss.key, miss.digest, entry).await;
+    Ok(())
+  }
 }
 
 fn cache_key(loader_context: &LoaderContext<RunnerContext>) -> (LoaderCacheKey, String) {
@@ -649,6 +972,7 @@ impl Loader<RunnerContext> for CacheLoader {
 #[cacheable]
 pub(crate) struct CachedLoader {
   inner: Arc<dyn Loader<RunnerContext>>,
+  options_hash: String,
 }
 
 impl std::fmt::Debug for CachedLoader {
@@ -660,8 +984,11 @@ impl std::fmt::Debug for CachedLoader {
 }
 
 impl CachedLoader {
-  pub(crate) fn new(inner: Arc<dyn Loader<RunnerContext>>) -> Self {
-    Self { inner }
+  pub(crate) fn new(inner: Arc<dyn Loader<RunnerContext>>, options_hash: String) -> Self {
+    Self {
+      inner,
+      options_hash,
+    }
   }
 }
 
@@ -674,6 +1001,10 @@ impl Loader<RunnerContext> for CachedLoader {
 
   fn cache(&self) -> bool {
     true
+  }
+
+  fn options_hash(&self) -> Option<&str> {
+    Some(&self.options_hash)
   }
 
   async fn run(&self, loader_context: &mut LoaderContext<RunnerContext>) -> Result<()> {
@@ -708,7 +1039,8 @@ mod tests {
 
   use super::{
     CachedLoader, DependencyDelta, LoaderCacheEntry, LoaderCacheFileStore, LoaderCacheKey,
-    ResourceStamp, decode_stored_entry, dependency_delta, encode_entry, mtime_is_reliable,
+    ResourceStamp, SingleLoaderCacheEntry, SingleLoaderCacheKey, decode_single_entry,
+    decode_stored_entry, dependency_delta, encode_entry, encode_single_entry, mtime_is_reliable,
     replay_dependency_delta,
   };
   use crate::RunnerContext;
@@ -753,6 +1085,30 @@ mod tests {
     }
   }
 
+  fn single_key(loader: &str, options: &str, input: &str) -> SingleLoaderCacheKey {
+    SingleLoaderCacheKey {
+      format_version: 1,
+      rspack_version: "test".to_string(),
+      compiler_scope: "scope".to_string(),
+      loader_identifier: loader.to_string(),
+      options_hash: options.to_string(),
+      input_hash: input.to_string(),
+      loader_mtime_ms: Some(1),
+      loader_size: Some(2),
+    }
+  }
+
+  fn single_entry(content: Content) -> SingleLoaderCacheEntry {
+    SingleLoaderCacheEntry {
+      content,
+      source_map: Some(r#"{"version":3,"sources":[],"names":[],"mappings":""}"#.to_string()),
+      file_dependencies: DependencyDelta::default(),
+      context_dependencies: DependencyDelta::default(),
+      missing_dependencies: DependencyDelta::default(),
+      build_dependencies: DependencyDelta::default(),
+    }
+  }
+
   #[cacheable]
   #[derive(Debug)]
   struct TestLoader;
@@ -767,7 +1123,7 @@ mod tests {
 
   #[test]
   fn cached_loader_is_one_logical_loader() {
-    let loader = CachedLoader::new(Arc::new(TestLoader));
+    let loader = CachedLoader::new(Arc::new(TestLoader), "options".to_string());
     assert!(loader.cache());
     assert_eq!(loader.identifier(), "test-loader?option=value".into());
   }
@@ -798,6 +1154,29 @@ mod tests {
     assert!(decode_stored_entry(&serde_json::to_vec(&payload).unwrap()).is_err());
   }
 
+  #[test]
+  fn single_loader_entry_preserves_content_type_and_rejects_other_keys() {
+    for content in [
+      Content::String("source".to_string()),
+      Content::Buffer(vec![0, 1, 2]),
+    ] {
+      let key = single_key("loader-a", "options-a", "input-a");
+      let bytes = encode_single_entry(key.clone(), single_entry(content.clone())).unwrap();
+      let decoded = decode_single_entry(&bytes, &key).unwrap();
+      assert_eq!(decoded.content, content);
+      assert!(
+        decode_single_entry(&bytes, &single_key("loader-b", "options-a", "input-a")).is_err()
+      );
+      assert!(
+        decode_single_entry(&bytes, &single_key("loader-a", "options-b", "input-a")).is_err()
+      );
+      assert!(
+        decode_single_entry(&bytes, &single_key("loader-a", "options-a", "input-b")).is_err()
+      );
+    }
+    assert!(decode_single_entry(b"not-json", &single_key("loader", "options", "input")).is_err());
+  }
+
   #[tokio::test]
   async fn file_store_uses_flat_paths_and_round_trips() {
     let root = test_dir("roundtrip");
@@ -809,6 +1188,15 @@ mod tests {
     assert!(!root.join("ab").exists());
 
     let _ = std::fs::remove_dir_all(root);
+  }
+
+  #[tokio::test]
+  async fn readonly_file_store_does_not_write() {
+    let root = test_dir("readonly");
+    let store = LoaderCacheFileStore::new(root.clone(), true);
+    store.put("abcdef", b"cached".to_vec()).await;
+    assert_eq!(store.get("abcdef").await, None);
+    assert!(!root.exists());
   }
 
   #[test]

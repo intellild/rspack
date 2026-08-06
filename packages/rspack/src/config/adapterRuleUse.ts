@@ -8,6 +8,7 @@ import type { Logger } from '../logging/Logger';
 import type { Module } from '../Module';
 import type { ResolveRequest } from '../Resolver';
 import { isNil } from '../util';
+import { createHash } from '../util/createHash';
 import type Hash from '../util/hash';
 import { parseResource } from '../util/identifier';
 import type { RspackOptionsNormalized } from './normalization';
@@ -482,6 +483,60 @@ export function createRawModuleRuleUses(
   return createRawModuleRuleUsesImpl(allUses, path, options);
 }
 
+function stableSerializeLoaderOptions(
+  value: unknown,
+  ancestors = new Set<object>(),
+): string {
+  if (value === undefined) return 'undefined';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return `string:${JSON.stringify(value)}`;
+  if (typeof value === 'boolean') return `boolean:${value}`;
+  if (typeof value === 'number') {
+    if (Number.isNaN(value)) return 'number:NaN';
+    if (value === Infinity) return 'number:Infinity';
+    if (value === -Infinity) return 'number:-Infinity';
+    if (Object.is(value, -0)) return 'number:-0';
+    return `number:${value}`;
+  }
+  if (typeof value === 'bigint') return `bigint:${value}`;
+  if (typeof value !== 'object') {
+    throw new Error(`Unsupported loader option type: ${typeof value}`);
+  }
+  if (ancestors.has(value)) {
+    throw new Error('Loader options must not contain circular references');
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return `array:[${value
+        .map((item) => stableSerializeLoaderOptions(item, ancestors))
+        .join(',')}]`;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error(
+        `Loader options must contain only plain objects and arrays, received ${prototype?.constructor?.name ?? 'unknown object'}`,
+      );
+    }
+    const record = value as Record<string, unknown>;
+    return `object:{${Object.keys(record)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${stableSerializeLoaderOptions(record[key], ancestors)}`,
+      )
+      .join(',')}}`;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function createLoaderOptionsHash(value: unknown): string {
+  const hash = createHash('xxhash64');
+  hash.update(Buffer.from(stableSerializeLoaderOptions(value)));
+  return hash.digest('hex');
+}
+
 export type GetLoaderOptions = (
   o: RuleSetLoaderWithOptions['options'],
   options: ComposeJsUseOptions,
@@ -513,10 +568,17 @@ function createRawModuleRuleUsesImpl(
   }
 
   return uses.filter(Boolean).map((use, index) => {
+    if (use.cache && use.parallel) {
+      throw new Error(
+        `\`Rule.use.cache\` cannot be combined with \`Rule.use.parallel\` yet (at ${path}[${index}])`,
+      );
+    }
     let o: string | undefined;
     let isBuiltin = false;
+    let effectiveOptions = use.options;
     if (use.loader.startsWith(BUILTIN_LOADER_PREFIX)) {
       const temp = getBuiltinLoaderOptions(use.loader, use.options, options);
+      effectiveOptions = temp;
       // keep json with indent so miette can show pretty error
       o = isNil(temp)
         ? undefined
@@ -535,6 +597,9 @@ function createRawModuleRuleUsesImpl(
       ),
       options: o,
       cache: use.cache ?? false,
+      optionsHash: use.cache
+        ? createLoaderOptionsHash(effectiveOptions)
+        : undefined,
     };
   });
 }
