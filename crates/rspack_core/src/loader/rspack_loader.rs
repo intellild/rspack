@@ -116,6 +116,12 @@ impl LoaderRunnerPlugin for RspackLoaderRunnerPlugin {
   }
 
   async fn start_yielding(&self, context: &mut LoaderContext<Self::Context>) -> Result<()> {
+    if context.state() == rspack_loader_runner::State::Normal
+      && context.current_loader().loader().cache()
+      && let Some(cache) = &context.context.loader_cache
+    {
+      cache.record_single_loader_js_yield();
+    }
     self
       .plugin_driver
       .normal_module_hooks

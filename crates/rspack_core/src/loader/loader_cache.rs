@@ -34,6 +34,17 @@ const LOCK_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 static TEMP_FILE_ID: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Default)]
+struct SingleLoaderCacheMetrics {
+  hits: AtomicU64,
+  misses: AtomicU64,
+  js_yields: AtomicU64,
+  hash_nanos: AtomicU64,
+  deserialize_nanos: AtomicU64,
+  read_files: AtomicU64,
+  read_bytes: AtomicU64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct LoaderCacheKey {
   rspack_version: String,
@@ -309,7 +320,29 @@ pub(crate) struct LoaderCacheService {
   compiler_scope: String,
   entries: FxDashMap<LoaderCacheKey, LoaderCacheEntry>,
   single_entries: FxDashMap<SingleLoaderCacheKey, SingleLoaderCacheEntry>,
+  metrics: SingleLoaderCacheMetrics,
   file_store: Option<LoaderCacheFileStore>,
+}
+
+impl Drop for LoaderCacheService {
+  fn drop(&mut self) {
+    if std::env::var_os("RSPACK_LOADER_CACHE_BENCH_STATS").is_none() {
+      return;
+    }
+    let metrics = &self.metrics;
+    eprintln!(
+      "RSPACK_LOADER_CACHE_BENCH_STATS {}",
+      serde_json::json!({
+        "hits": metrics.hits.load(Ordering::Relaxed),
+        "misses": metrics.misses.load(Ordering::Relaxed),
+        "jsYields": metrics.js_yields.load(Ordering::Relaxed),
+        "hashNanos": metrics.hash_nanos.load(Ordering::Relaxed),
+        "deserializeNanos": metrics.deserialize_nanos.load(Ordering::Relaxed),
+        "readFiles": metrics.read_files.load(Ordering::Relaxed),
+        "readBytes": metrics.read_bytes.load(Ordering::Relaxed),
+      })
+    );
+  }
 }
 
 impl LoaderCacheService {
@@ -350,6 +383,7 @@ impl LoaderCacheService {
       compiler_scope,
       entries: FxDashMap::default(),
       single_entries: FxDashMap::default(),
+      metrics: SingleLoaderCacheMetrics::default(),
       file_store,
     }
   }
@@ -419,17 +453,37 @@ impl LoaderCacheService {
       .get(key)
       .map(|entry| entry.value().clone())
     {
+      self.metrics.hits.fetch_add(1, Ordering::Relaxed);
       return Some(entry);
     }
-    let file_store = self.file_store.as_ref()?;
-    let bytes = file_store.get(digest).await?;
-    let entry = match decode_single_entry(&bytes, key) {
+    let Some(file_store) = self.file_store.as_ref() else {
+      self.metrics.misses.fetch_add(1, Ordering::Relaxed);
+      return None;
+    };
+    let Some(bytes) = file_store.get(digest).await else {
+      self.metrics.misses.fetch_add(1, Ordering::Relaxed);
+      return None;
+    };
+    self.metrics.read_files.fetch_add(1, Ordering::Relaxed);
+    self
+      .metrics
+      .read_bytes
+      .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+    let deserialize_started = Instant::now();
+    let decoded = decode_single_entry(&bytes, key);
+    self.metrics.deserialize_nanos.fetch_add(
+      deserialize_started.elapsed().as_nanos() as u64,
+      Ordering::Relaxed,
+    );
+    let entry = match decoded {
       Ok(entry) => entry,
       Err(()) => {
+        self.metrics.misses.fetch_add(1, Ordering::Relaxed);
         file_store.remove_if_unchanged(digest, bytes).await;
         return None;
       }
     };
+    self.metrics.hits.fetch_add(1, Ordering::Relaxed);
     self.single_entries.insert(key.clone(), entry.clone());
     Some(entry)
   }
@@ -454,6 +508,10 @@ impl LoaderCacheService {
     if let Some(file_store) = &self.file_store {
       file_store.remove(digest).await;
     }
+  }
+
+  pub(crate) fn record_single_loader_js_yield(&self) {
+    self.metrics.js_yields.fetch_add(1, Ordering::Relaxed);
   }
 }
 
@@ -607,6 +665,7 @@ async fn single_loader_cache_key(
 ) -> Option<(SingleLoaderCacheKey, String)> {
   let loader = loader_context.current_loader().loader();
   let options_hash = loader.options_hash()?.to_string();
+  let hash_started = Instant::now();
   let input_hash = content_hash(loader_context.content()?);
   let loader_stamp = current_loader_stamp(loader_context).await;
   let key = SingleLoaderCacheKey {
@@ -621,6 +680,10 @@ async fn single_loader_cache_key(
   };
   let bytes = serde_json::to_vec(&key).ok()?;
   let digest = format!("single-{:016x}", hash_bytes(&bytes));
+  service
+    .metrics
+    .hash_nanos
+    .fetch_add(hash_started.elapsed().as_nanos() as u64, Ordering::Relaxed);
   Some((key, digest))
 }
 
