@@ -18,7 +18,6 @@ use super::interceptor::*;
 #[plugin]
 #[derive(Clone)]
 pub struct JsHooksAdapterPlugin {
-  non_skippable_registers: NonSkippableRegisters,
   register_compiler_this_compilation_taps: RegisterCompilerThisCompilationTaps,
   register_compiler_compilation_taps: RegisterCompilerCompilationTaps,
   register_compiler_make_taps: RegisterCompilerMakeTaps,
@@ -92,167 +91,227 @@ impl Plugin for JsHooksAdapterPlugin {
 
   // #[tracing::instrument("js_hooks_adapter::apply", skip_all)]
   fn apply(&self, ctx: &mut rspack_core::ApplyContext<'_>) -> rspack_error::Result<()> {
-    ctx
-      .compiler_hooks
-      .this_compilation
-      .intercept(self.register_compiler_this_compilation_taps.clone());
+    ctx.compiler_hooks.this_compilation.load_js_tap_register(
+      self
+        .register_compiler_this_compilation_taps
+        .js_tap_register(),
+    )?;
     ctx
       .compiler_hooks
       .compilation
-      .intercept(self.register_compiler_compilation_taps.clone());
+      .load_js_tap_register(self.register_compiler_compilation_taps.js_tap_register())?;
     ctx
       .compiler_hooks
       .make
-      .intercept(self.register_compiler_make_taps.clone());
+      .load_js_tap_register(self.register_compiler_make_taps.js_tap_register())?;
     ctx
       .compiler_hooks
       .finish_make
-      .intercept(self.register_compiler_finish_make_taps.clone());
+      .load_js_tap_register(self.register_compiler_finish_make_taps.js_tap_register())?;
     ctx
       .compiler_hooks
       .should_emit
-      .intercept(self.register_compiler_should_emit_taps.clone());
+      .load_js_tap_register(self.register_compiler_should_emit_taps.js_tap_register())?;
     ctx
       .compiler_hooks
       .emit
-      .intercept(self.register_compiler_emit_taps.clone());
+      .load_js_tap_register(self.register_compiler_emit_taps.js_tap_register())?;
     ctx
       .compiler_hooks
       .after_emit
-      .intercept(self.register_compiler_after_emit_taps.clone());
+      .load_js_tap_register(self.register_compiler_after_emit_taps.js_tap_register())?;
     ctx
       .compiler_hooks
       .asset_emitted
-      .intercept(self.register_compiler_asset_emitted_taps.clone());
-    ctx
-      .compilation_hooks
-      .build_module
-      .intercept(self.register_compilation_build_module_taps.clone());
+      .load_js_tap_register(self.register_compiler_asset_emitted_taps.js_tap_register())?;
+    ctx.compilation_hooks.build_module.load_js_tap_register(
+      self
+        .register_compilation_build_module_taps
+        .js_tap_register(),
+    )?;
     ctx
       .compilation_hooks
       .still_valid_module
-      .intercept(self.register_compilation_still_valid_module_taps.clone());
-    ctx
-      .compilation_hooks
-      .succeed_module
-      .intercept(self.register_compilation_succeed_module_taps.clone());
-    ctx
-      .compilation_hooks
-      .execute_module
-      .intercept(self.register_compilation_execute_module_taps.clone());
-    ctx
-      .compilation_hooks
-      .finish_modules
-      .intercept(self.register_compilation_finish_modules_taps.clone());
+      .load_js_tap_register(
+        self
+          .register_compilation_still_valid_module_taps
+          .js_tap_register(),
+      )?;
+    ctx.compilation_hooks.succeed_module.load_js_tap_register(
+      self
+        .register_compilation_succeed_module_taps
+        .js_tap_register(),
+    )?;
+    ctx.compilation_hooks.execute_module.load_js_tap_register(
+      self
+        .register_compilation_execute_module_taps
+        .js_tap_register(),
+    )?;
+    ctx.compilation_hooks.finish_modules.load_js_tap_register(
+      self
+        .register_compilation_finish_modules_taps
+        .js_tap_register(),
+    )?;
     ctx
       .compilation_hooks
       .optimize_modules
-      .intercept(self.register_compilation_optimize_modules_taps.clone());
-    ctx.compilation_hooks.after_optimize_modules.intercept(
-      self
-        .register_compilation_after_optimize_modules_taps
-        .clone(),
-    );
+      .load_js_tap_register(
+        self
+          .register_compilation_optimize_modules_taps
+          .js_tap_register(),
+      )?;
     ctx
       .compilation_hooks
-      .optimize_tree
-      .intercept(self.register_compilation_optimize_tree_taps.clone());
-    ctx.compilation_hooks.optimize_chunk_modules.intercept(
+      .after_optimize_modules
+      .load_js_tap_register(
+        self
+          .register_compilation_after_optimize_modules_taps
+          .js_tap_register(),
+      )?;
+    ctx.compilation_hooks.optimize_tree.load_js_tap_register(
       self
-        .register_compilation_optimize_chunk_modules_taps
-        .clone(),
-    );
+        .register_compilation_optimize_tree_taps
+        .js_tap_register(),
+    )?;
+    ctx
+      .compilation_hooks
+      .optimize_chunk_modules
+      .load_js_tap_register(
+        self
+          .register_compilation_optimize_chunk_modules_taps
+          .js_tap_register(),
+      )?;
     ctx
       .compilation_hooks
       .before_module_ids
-      .intercept(self.register_compilation_before_module_ids_taps.clone());
+      .load_js_tap_register(
+        self
+          .register_compilation_before_module_ids_taps
+          .js_tap_register(),
+      )?;
     ctx
       .compilation_hooks
       .additional_tree_runtime_requirements
-      .intercept(
+      .load_js_tap_register(
         self
           .register_compilation_additional_tree_runtime_requirements_taps
-          .clone(),
-      );
-    ctx.compilation_hooks.runtime_requirement_in_tree.intercept(
-      self
-        .register_compilation_runtime_requirement_in_tree_taps
-        .clone(),
-    );
+          .js_tap_register(),
+      )?;
     ctx
       .compilation_hooks
-      .runtime_module
-      .intercept(self.register_compilation_runtime_module_taps.clone());
+      .runtime_requirement_in_tree
+      .load_js_tap_register(
+        self
+          .register_compilation_runtime_requirement_in_tree_taps
+          .js_tap_register(),
+      )?;
+    ctx.compilation_hooks.runtime_module.load_js_tap_register(
+      self
+        .register_compilation_runtime_module_taps
+        .js_tap_register(),
+    )?;
     ctx
       .compilation_hooks
       .chunk_hash
-      .intercept(self.register_compilation_chunk_hash_taps.clone());
+      .load_js_tap_register(self.register_compilation_chunk_hash_taps.js_tap_register())?;
     ctx
       .compilation_hooks
       .chunk_asset
-      .intercept(self.register_compilation_chunk_asset_taps.clone());
-    ctx
-      .compilation_hooks
-      .process_assets
-      .intercept(self.register_compilation_process_assets_taps.clone());
+      .load_js_tap_register(self.register_compilation_chunk_asset_taps.js_tap_register())?;
+    ctx.compilation_hooks.process_assets.load_js_tap_register(
+      self
+        .register_compilation_process_assets_taps
+        .js_tap_register(),
+    )?;
     ctx
       .compilation_hooks
       .after_process_assets
-      .intercept(self.register_compilation_after_process_assets_taps.clone());
+      .load_js_tap_register(
+        self
+          .register_compilation_after_process_assets_taps
+          .js_tap_register(),
+      )?;
     ctx
       .compilation_hooks
       .seal
-      .intercept(self.register_compilation_seal_taps.clone());
+      .load_js_tap_register(self.register_compilation_seal_taps.js_tap_register())?;
     ctx
       .compilation_hooks
       .after_seal
-      .intercept(self.register_compilation_after_seal_taps.clone());
+      .load_js_tap_register(self.register_compilation_after_seal_taps.js_tap_register())?;
     ctx
       .compilation_hooks
       .external_module_chunk_condition
-      .intercept(self.register_external_module_chunk_condition_taps.clone());
+      .load_js_tap_register(
+        self
+          .register_external_module_chunk_condition_taps
+          .js_tap_register(),
+      )?;
 
-    ctx.normal_module_factory_hooks.before_resolve.intercept(
-      self
-        .register_normal_module_factory_before_resolve_taps
-        .clone(),
-    );
+    ctx
+      .normal_module_factory_hooks
+      .before_resolve
+      .load_js_tap_register(
+        self
+          .register_normal_module_factory_before_resolve_taps
+          .js_tap_register(),
+      )?;
     ctx
       .normal_module_factory_hooks
       .factorize
-      .intercept(self.register_normal_module_factory_factorize_taps.clone());
+      .load_js_tap_register(
+        self
+          .register_normal_module_factory_factorize_taps
+          .js_tap_register(),
+      )?;
     ctx
       .normal_module_factory_hooks
       .resolve
-      .intercept(self.register_normal_module_factory_resolve_taps.clone());
+      .load_js_tap_register(
+        self
+          .register_normal_module_factory_resolve_taps
+          .js_tap_register(),
+      )?;
     ctx
       .normal_module_factory_hooks
       .resolve_for_scheme
-      .intercept(
+      .load_js_tap_register(
         self
           .register_normal_module_factory_resolve_for_scheme_taps
-          .clone(),
-      );
-    ctx.normal_module_factory_hooks.after_resolve.intercept(
-      self
-        .register_normal_module_factory_after_resolve_taps
-        .clone(),
-    );
-    ctx.normal_module_factory_hooks.create_module.intercept(
-      self
-        .register_normal_module_factory_create_module_taps
-        .clone(),
-    );
-    ctx.context_module_factory_hooks.before_resolve.intercept(
-      self
-        .register_context_module_factory_before_resolve_taps
-        .clone(),
-    );
-    ctx.context_module_factory_hooks.after_resolve.intercept(
-      self
-        .register_context_module_factory_after_resolve_taps
-        .clone(),
-    );
+          .js_tap_register(),
+      )?;
+    ctx
+      .normal_module_factory_hooks
+      .after_resolve
+      .load_js_tap_register(
+        self
+          .register_normal_module_factory_after_resolve_taps
+          .js_tap_register(),
+      )?;
+    ctx
+      .normal_module_factory_hooks
+      .create_module
+      .load_js_tap_register(
+        self
+          .register_normal_module_factory_create_module_taps
+          .js_tap_register(),
+      )?;
+    ctx
+      .context_module_factory_hooks
+      .before_resolve
+      .load_js_tap_register(
+        self
+          .register_context_module_factory_before_resolve_taps
+          .js_tap_register(),
+      )?;
+    ctx
+      .context_module_factory_hooks
+      .after_resolve
+      .load_js_tap_register(
+        self
+          .register_context_module_factory_after_resolve_taps
+          .js_tap_register(),
+      )?;
 
     ctx
       .compiler_hooks
@@ -401,9 +460,11 @@ async fn js_hooks_adapter_compilation(
 ) -> rspack_error::Result<()> {
   let hooks = JsPlugin::get_compilation_hooks_mut(compilation.id());
   let mut hooks = hooks.write().await;
-  hooks
-    .chunk_hash
-    .intercept(self.register_javascript_modules_chunk_hash_taps.clone());
+  hooks.chunk_hash.load_js_tap_register(
+    self
+      .register_javascript_modules_chunk_hash_taps
+      .js_tap_register(),
+  )?;
 
   Ok(())
 }
@@ -416,30 +477,32 @@ async fn html_hooks_adapter_compilation(
 ) -> rspack_error::Result<()> {
   let hooks = HtmlRspackPlugin::get_compilation_hooks_mut(compilation.id());
   let mut hooks = hooks.borrow_mut();
-  hooks.before_asset_tag_generation.intercept(
+  hooks.before_asset_tag_generation.load_js_tap_register(
     self
       .register_html_plugin_before_asset_tag_generation_taps
-      .clone(),
-  );
-  hooks
-    .alter_asset_tags
-    .intercept(self.register_html_plugin_alter_asset_tags_taps.clone());
-  hooks.alter_asset_tag_groups.intercept(
+      .js_tap_register(),
+  )?;
+  hooks.alter_asset_tags.load_js_tap_register(
+    self
+      .register_html_plugin_alter_asset_tags_taps
+      .js_tap_register(),
+  )?;
+  hooks.alter_asset_tag_groups.load_js_tap_register(
     self
       .register_html_plugin_alter_asset_tag_groups_taps
-      .clone(),
-  );
-  hooks.after_template_execution.intercept(
+      .js_tap_register(),
+  )?;
+  hooks.after_template_execution.load_js_tap_register(
     self
       .register_html_plugin_after_template_execution_taps
-      .clone(),
-  );
+      .js_tap_register(),
+  )?;
   hooks
     .before_emit
-    .intercept(self.register_html_plugin_before_emit_taps.clone());
+    .load_js_tap_register(self.register_html_plugin_before_emit_taps.js_tap_register())?;
   hooks
     .after_emit
-    .intercept(self.register_html_plugin_after_emit_taps.clone());
+    .load_js_tap_register(self.register_html_plugin_after_emit_taps.js_tap_register())?;
 
   Ok(())
 }
@@ -452,18 +515,26 @@ async fn runtime_hooks_adapter_compilation(
 ) -> rspack_error::Result<()> {
   let hooks = RuntimePlugin::get_compilation_hooks_mut(compilation.id());
   let mut hooks = hooks.borrow_mut();
-  hooks
-    .create_script
-    .intercept(self.register_runtime_plugin_create_script_taps.clone());
-  hooks
-    .create_link
-    .intercept(self.register_runtime_plugin_create_link_taps.clone());
-  hooks
-    .link_preload
-    .intercept(self.register_runtime_plugin_link_preload_taps.clone());
-  hooks
-    .link_prefetch
-    .intercept(self.register_runtime_plugin_link_prefetch_taps.clone());
+  hooks.create_script.load_js_tap_register(
+    self
+      .register_runtime_plugin_create_script_taps
+      .js_tap_register(),
+  )?;
+  hooks.create_link.load_js_tap_register(
+    self
+      .register_runtime_plugin_create_link_taps
+      .js_tap_register(),
+  )?;
+  hooks.link_preload.load_js_tap_register(
+    self
+      .register_runtime_plugin_link_preload_taps
+      .js_tap_register(),
+  )?;
+  hooks.link_prefetch.load_js_tap_register(
+    self
+      .register_runtime_plugin_link_prefetch_taps
+      .js_tap_register(),
+  )?;
   Ok(())
 }
 
@@ -475,21 +546,29 @@ async fn rsdoctor_hooks_adapter_compilation(
 ) -> rspack_error::Result<()> {
   let hooks = RsdoctorPlugin::get_compilation_hooks_mut(compilation.id());
   let mut hooks = hooks.borrow_mut();
-  hooks
-    .module_graph
-    .intercept(self.register_rsdoctor_plugin_module_graph_taps.clone());
-  hooks
-    .chunk_graph
-    .intercept(self.register_rsdoctor_plugin_chunk_graph_taps.clone());
+  hooks.module_graph.load_js_tap_register(
+    self
+      .register_rsdoctor_plugin_module_graph_taps
+      .js_tap_register(),
+  )?;
+  hooks.chunk_graph.load_js_tap_register(
+    self
+      .register_rsdoctor_plugin_chunk_graph_taps
+      .js_tap_register(),
+  )?;
   hooks
     .assets
-    .intercept(self.register_rsdoctor_plugin_assets_taps.clone());
-  hooks
-    .module_ids
-    .intercept(self.register_rsdoctor_plugin_module_ids_taps.clone());
-  hooks
-    .module_sources
-    .intercept(self.register_rsdoctor_plugin_module_sources_taps.clone());
+    .load_js_tap_register(self.register_rsdoctor_plugin_assets_taps.js_tap_register())?;
+  hooks.module_ids.load_js_tap_register(
+    self
+      .register_rsdoctor_plugin_module_ids_taps
+      .js_tap_register(),
+  )?;
+  hooks.module_sources.load_js_tap_register(
+    self
+      .register_rsdoctor_plugin_module_sources_taps
+      .js_tap_register(),
+  )?;
 
   Ok(())
 }
@@ -502,258 +581,363 @@ async fn real_content_hash_hooks_adapter_compilation(
 ) -> rspack_error::Result<()> {
   let hooks = RealContentHashPlugin::get_compilation_hooks_mut(compilation.id());
   let mut hooks = hooks.borrow_mut();
-  hooks.update_hash.intercept(
+  hooks.update_hash.load_js_tap_register(
     self
       .register_real_content_hash_plugin_update_hash_taps
-      .clone(),
-  );
+      .js_tap_register(),
+  )?;
   Ok(())
 }
 
 impl JsHooksAdapterPlugin {
   /// The `_env` parameter ensures this function is called on the JS main thread.
   pub fn from_js_hooks(_env: &Env, register_js_taps: RegisterJsTaps) -> Result<Self> {
-    let non_skippable_registers = NonSkippableRegisters::default();
     Ok(JsHooksAdapterPlugin {
       inner: JsHooksAdapterPluginInner {
         register_compiler_this_compilation_taps: RegisterCompilerThisCompilationTaps::new(
           register_js_taps.register_compiler_this_compilation_taps,
-          non_skippable_registers.clone(),
         ),
         register_compiler_compilation_taps: RegisterCompilerCompilationTaps::new(
           register_js_taps.register_compiler_compilation_taps,
-          non_skippable_registers.clone(),
         ),
         register_compiler_make_taps: RegisterCompilerMakeTaps::new(
           register_js_taps.register_compiler_make_taps,
-          non_skippable_registers.clone(),
         ),
         register_compiler_finish_make_taps: RegisterCompilerFinishMakeTaps::new(
           register_js_taps.register_compiler_finish_make_taps,
-          non_skippable_registers.clone(),
         ),
         register_compiler_should_emit_taps: RegisterCompilerShouldEmitTaps::new(
           register_js_taps.register_compiler_should_emit_taps,
-          non_skippable_registers.clone(),
         ),
         register_compiler_emit_taps: RegisterCompilerEmitTaps::new(
           register_js_taps.register_compiler_emit_taps,
-          non_skippable_registers.clone(),
         ),
         register_compiler_after_emit_taps: RegisterCompilerAfterEmitTaps::new(
           register_js_taps.register_compiler_after_emit_taps,
-          non_skippable_registers.clone(),
         ),
         register_compiler_asset_emitted_taps: RegisterCompilerAssetEmittedTaps::new(
           register_js_taps.register_compiler_asset_emitted_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_build_module_taps: RegisterCompilationBuildModuleTaps::new(
           register_js_taps.register_compilation_build_module_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_still_valid_module_taps: RegisterCompilationStillValidModuleTaps::new(
           register_js_taps.register_compilation_still_valid_module_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_succeed_module_taps: RegisterCompilationSucceedModuleTaps::new(
           register_js_taps.register_compilation_succeed_module_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_execute_module_taps: RegisterCompilationExecuteModuleTaps::new(
           register_js_taps.register_compilation_execute_module_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_finish_modules_taps: RegisterCompilationFinishModulesTaps::new(
           register_js_taps.register_compilation_finish_modules_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_optimize_modules_taps: RegisterCompilationOptimizeModulesTaps::new(
           register_js_taps.register_compilation_optimize_modules_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_after_optimize_modules_taps:
           RegisterCompilationAfterOptimizeModulesTaps::new(
             register_js_taps.register_compilation_after_optimize_modules_taps,
-            non_skippable_registers.clone(),
           ),
         register_compilation_optimize_tree_taps: RegisterCompilationOptimizeTreeTaps::new(
           register_js_taps.register_compilation_optimize_tree_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_optimize_chunk_modules_taps:
           RegisterCompilationOptimizeChunkModulesTaps::new(
             register_js_taps.register_compilation_optimize_chunk_modules_taps,
-            non_skippable_registers.clone(),
           ),
         register_compilation_before_module_ids_taps: RegisterCompilationBeforeModuleIdsTaps::new(
           register_js_taps.register_compilation_before_module_ids_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_additional_tree_runtime_requirements_taps:
           RegisterCompilationAdditionalTreeRuntimeRequirementsTaps::new(
             register_js_taps.register_compilation_additional_tree_runtime_requirements_taps,
-            non_skippable_registers.clone(),
           ),
         register_compilation_runtime_requirement_in_tree_taps:
           RegisterCompilationRuntimeRequirementInTreeTaps::new(
             register_js_taps.register_compilation_runtime_requirement_in_tree_taps,
-            non_skippable_registers.clone(),
           ),
         register_compilation_runtime_module_taps: RegisterCompilationRuntimeModuleTaps::new(
           register_js_taps.register_compilation_runtime_module_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_chunk_hash_taps: RegisterCompilationChunkHashTaps::new(
           register_js_taps.register_compilation_chunk_hash_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_chunk_asset_taps: RegisterCompilationChunkAssetTaps::new(
           register_js_taps.register_compilation_chunk_asset_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_process_assets_taps: RegisterCompilationProcessAssetsTaps::new(
           register_js_taps.register_compilation_process_assets_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_after_process_assets_taps:
           RegisterCompilationAfterProcessAssetsTaps::new(
             register_js_taps.register_compilation_after_process_assets_taps,
-            non_skippable_registers.clone(),
           ),
         register_compilation_seal_taps: RegisterCompilationSealTaps::new(
           register_js_taps.register_compilation_seal_taps,
-          non_skippable_registers.clone(),
         ),
         register_compilation_after_seal_taps: RegisterCompilationAfterSealTaps::new(
           register_js_taps.register_compilation_after_seal_taps,
-          non_skippable_registers.clone(),
         ),
         register_normal_module_factory_before_resolve_taps:
           RegisterNormalModuleFactoryBeforeResolveTaps::new(
             register_js_taps.register_normal_module_factory_before_resolve_taps,
-            non_skippable_registers.clone(),
           ),
         register_normal_module_factory_factorize_taps:
           RegisterNormalModuleFactoryFactorizeTaps::new(
             register_js_taps.register_normal_module_factory_factorize_taps,
-            non_skippable_registers.clone(),
           ),
         register_normal_module_factory_resolve_taps: RegisterNormalModuleFactoryResolveTaps::new(
           register_js_taps.register_normal_module_factory_resolve_taps,
-          non_skippable_registers.clone(),
         ),
         register_normal_module_factory_resolve_for_scheme_taps:
           RegisterNormalModuleFactoryResolveForSchemeTaps::new(
             register_js_taps.register_normal_module_factory_resolve_for_scheme_taps,
-            non_skippable_registers.clone(),
           ),
         register_normal_module_factory_after_resolve_taps:
           RegisterNormalModuleFactoryAfterResolveTaps::new(
             register_js_taps.register_normal_module_factory_after_resolve_taps,
-            non_skippable_registers.clone(),
           ),
         register_normal_module_factory_create_module_taps:
           RegisterNormalModuleFactoryCreateModuleTaps::new(
             register_js_taps.register_normal_module_factory_create_module_taps,
-            non_skippable_registers.clone(),
           ),
         register_context_module_factory_before_resolve_taps:
           RegisterContextModuleFactoryBeforeResolveTaps::new(
             register_js_taps.register_context_module_factory_before_resolve_taps,
-            non_skippable_registers.clone(),
           ),
         register_context_module_factory_after_resolve_taps:
           RegisterContextModuleFactoryAfterResolveTaps::new(
             register_js_taps.register_context_module_factory_after_resolve_taps,
-            non_skippable_registers.clone(),
           ),
         register_external_module_chunk_condition_taps:
           RegisterExternalModuleChunkConditionTaps::new(
             register_js_taps.register_external_module_chunk_condition_taps,
-            non_skippable_registers.clone(),
           ),
         register_javascript_modules_chunk_hash_taps: RegisterJavascriptModulesChunkHashTaps::new(
           register_js_taps.register_javascript_modules_chunk_hash_taps,
-          non_skippable_registers.clone(),
         ),
         register_html_plugin_before_asset_tag_generation_taps:
           RegisterHtmlPluginBeforeAssetTagGenerationTaps::new(
             register_js_taps.register_html_plugin_before_asset_tag_generation_taps,
-            non_skippable_registers.clone(),
           ),
         register_html_plugin_alter_asset_tags_taps: RegisterHtmlPluginAlterAssetTagsTaps::new(
           register_js_taps.register_html_plugin_alter_asset_tags_taps,
-          non_skippable_registers.clone(),
         ),
         register_html_plugin_alter_asset_tag_groups_taps:
           RegisterHtmlPluginAlterAssetTagGroupsTaps::new(
             register_js_taps.register_html_plugin_alter_asset_tag_groups_taps,
-            non_skippable_registers.clone(),
           ),
         register_html_plugin_after_template_execution_taps:
           RegisterHtmlPluginAfterTemplateExecutionTaps::new(
             register_js_taps.register_html_plugin_after_template_execution_taps,
-            non_skippable_registers.clone(),
           ),
         register_html_plugin_before_emit_taps: RegisterHtmlPluginBeforeEmitTaps::new(
           register_js_taps.register_html_plugin_before_emit_taps,
-          non_skippable_registers.clone(),
         ),
         register_html_plugin_after_emit_taps: RegisterHtmlPluginAfterEmitTaps::new(
           register_js_taps.register_html_plugin_after_emit_taps,
-          non_skippable_registers.clone(),
         ),
         register_runtime_plugin_create_script_taps: RegisterRuntimePluginCreateScriptTaps::new(
           register_js_taps.register_runtime_plugin_create_script_taps,
-          non_skippable_registers.clone(),
         ),
         register_runtime_plugin_create_link_taps: RegisterRuntimePluginCreateLinkTaps::new(
           register_js_taps.register_runtime_plugin_create_link_taps,
-          non_skippable_registers.clone(),
         ),
         register_runtime_plugin_link_preload_taps: RegisterRuntimePluginLinkPreloadTaps::new(
           register_js_taps.register_runtime_plugin_link_preload_taps,
-          non_skippable_registers.clone(),
         ),
         register_runtime_plugin_link_prefetch_taps: RegisterRuntimePluginLinkPrefetchTaps::new(
           register_js_taps.register_runtime_plugin_link_prefetch_taps,
-          non_skippable_registers.clone(),
         ),
         register_real_content_hash_plugin_update_hash_taps:
           RegisterRealContentHashPluginUpdateHashTaps::new(
             register_js_taps.register_real_content_hash_plugin_update_hash_taps,
-            non_skippable_registers.clone(),
           ),
         register_rsdoctor_plugin_module_graph_taps: RegisterRsdoctorPluginModuleGraphTaps::new(
           register_js_taps.register_rsdoctor_plugin_module_graph_taps,
-          non_skippable_registers.clone(),
         ),
         register_rsdoctor_plugin_chunk_graph_taps: RegisterRsdoctorPluginChunkGraphTaps::new(
           register_js_taps.register_rsdoctor_plugin_chunk_graph_taps,
-          non_skippable_registers.clone(),
         ),
         register_rsdoctor_plugin_assets_taps: RegisterRsdoctorPluginAssetsTaps::new(
           register_js_taps.register_rsdoctor_plugin_assets_taps,
-          non_skippable_registers.clone(),
         ),
         register_rsdoctor_plugin_module_ids_taps: RegisterRsdoctorPluginModuleIdsTaps::new(
           register_js_taps.register_rsdoctor_plugin_module_ids_taps,
-          non_skippable_registers.clone(),
         ),
         register_rsdoctor_plugin_module_sources_taps: RegisterRsdoctorPluginModuleSourcesTaps::new(
           register_js_taps.register_rsdoctor_plugin_module_sources_taps,
-          non_skippable_registers.clone(),
         ),
-        non_skippable_registers,
       }
       .into(),
     })
   }
 
   pub fn set_non_skippable_registers(&self, kinds: Vec<RegisterJsTapKind>) {
-    self
-      .non_skippable_registers
-      .set_non_skippable_registers(kinds);
+    for kind in RegisterJsTapKind::ALL {
+      self.set_register_js_tap_count(*kind, usize::from(kinds.contains(kind)));
+    }
+  }
+
+  pub fn set_register_js_tap_count(&self, kind: RegisterJsTapKind, tap_count: usize) {
+    match kind {
+      RegisterJsTapKind::CompilerThisCompilation => self
+        .register_compiler_this_compilation_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilerCompilation => self
+        .register_compiler_compilation_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilerMake => self.register_compiler_make_taps.set_tap_count(tap_count),
+      RegisterJsTapKind::CompilerFinishMake => self
+        .register_compiler_finish_make_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilerShouldEmit => self
+        .register_compiler_should_emit_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilerEmit => self.register_compiler_emit_taps.set_tap_count(tap_count),
+      RegisterJsTapKind::CompilerAfterEmit => self
+        .register_compiler_after_emit_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilerAssetEmitted => self
+        .register_compiler_asset_emitted_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationBuildModule => self
+        .register_compilation_build_module_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationStillValidModule => self
+        .register_compilation_still_valid_module_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationSucceedModule => self
+        .register_compilation_succeed_module_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationExecuteModule => self
+        .register_compilation_execute_module_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationFinishModules => self
+        .register_compilation_finish_modules_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationOptimizeModules => self
+        .register_compilation_optimize_modules_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationAfterOptimizeModules => self
+        .register_compilation_after_optimize_modules_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationOptimizeTree => self
+        .register_compilation_optimize_tree_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationOptimizeChunkModules => self
+        .register_compilation_optimize_chunk_modules_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationBeforeModuleIds => self
+        .register_compilation_before_module_ids_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationAdditionalTreeRuntimeRequirements => self
+        .register_compilation_additional_tree_runtime_requirements_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationRuntimeRequirementInTree => self
+        .register_compilation_runtime_requirement_in_tree_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationRuntimeModule => self
+        .register_compilation_runtime_module_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationChunkHash => self
+        .register_compilation_chunk_hash_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationChunkAsset => self
+        .register_compilation_chunk_asset_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationProcessAssets => self
+        .register_compilation_process_assets_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationAfterProcessAssets => self
+        .register_compilation_after_process_assets_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::CompilationSeal => {
+        self.register_compilation_seal_taps.set_tap_count(tap_count)
+      }
+      RegisterJsTapKind::CompilationAfterSeal => self
+        .register_compilation_after_seal_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::NormalModuleFactoryBeforeResolve => self
+        .register_normal_module_factory_before_resolve_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::NormalModuleFactoryFactorize => self
+        .register_normal_module_factory_factorize_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::NormalModuleFactoryResolve => self
+        .register_normal_module_factory_resolve_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::NormalModuleFactoryAfterResolve => self
+        .register_normal_module_factory_after_resolve_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::NormalModuleFactoryCreateModule => self
+        .register_normal_module_factory_create_module_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::NormalModuleFactoryResolveForScheme => self
+        .register_normal_module_factory_resolve_for_scheme_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::ContextModuleFactoryBeforeResolve => self
+        .register_context_module_factory_before_resolve_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::ContextModuleFactoryAfterResolve => self
+        .register_context_module_factory_after_resolve_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::ExternalModuleChunkCondition => self
+        .register_external_module_chunk_condition_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::JavascriptModulesChunkHash => self
+        .register_javascript_modules_chunk_hash_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::HtmlPluginBeforeAssetTagGeneration => self
+        .register_html_plugin_before_asset_tag_generation_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::HtmlPluginAlterAssetTags => self
+        .register_html_plugin_alter_asset_tags_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::HtmlPluginAlterAssetTagGroups => self
+        .register_html_plugin_alter_asset_tag_groups_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::HtmlPluginAfterTemplateExecution => self
+        .register_html_plugin_after_template_execution_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::HtmlPluginBeforeEmit => self
+        .register_html_plugin_before_emit_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::HtmlPluginAfterEmit => self
+        .register_html_plugin_after_emit_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RuntimePluginCreateScript => self
+        .register_runtime_plugin_create_script_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RuntimePluginCreateLink => self
+        .register_runtime_plugin_create_link_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RuntimePluginLinkPreload => self
+        .register_runtime_plugin_link_preload_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RuntimePluginLinkPrefetch => self
+        .register_runtime_plugin_link_prefetch_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RealContentHashPluginUpdateHash => self
+        .register_real_content_hash_plugin_update_hash_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RsdoctorPluginModuleGraph => self
+        .register_rsdoctor_plugin_module_graph_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RsdoctorPluginChunkGraph => self
+        .register_rsdoctor_plugin_chunk_graph_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RsdoctorPluginModuleIds => self
+        .register_rsdoctor_plugin_module_ids_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RsdoctorPluginModuleSources => self
+        .register_rsdoctor_plugin_module_sources_taps
+        .set_tap_count(tap_count),
+      RegisterJsTapKind::RsdoctorPluginAssets => self
+        .register_rsdoctor_plugin_assets_taps
+        .set_tap_count(tap_count),
+    }
   }
 }

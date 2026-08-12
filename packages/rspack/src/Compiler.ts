@@ -1092,7 +1092,10 @@ class Compiler {
     const getTaps = (stages: number[]) => {
       const compiler = that.deref()!;
       const hook = getHook();
-      if (!hook.isUsed()) return [];
+      if (!hook.isUsed()) {
+        compiler.#instance!.setRegisterJsTapCount(registerKind, 0);
+        return [];
+      }
       const breakpoints = [
         liteTapable.minStage,
         ...stages,
@@ -1111,6 +1114,7 @@ class Compiler {
         });
       }
       compiler.#decorateJsTaps(jsTaps);
+      compiler.#instance!.setRegisterJsTapCount(registerKind, jsTaps.length);
       return jsTaps;
     };
     getTaps.registerKind = registerKind;
@@ -1131,7 +1135,10 @@ class Compiler {
     const getTaps = (stages: number[]) => {
       const compiler = that.deref()!;
       const map = getHookMap();
-      if (!map.isUsed()) return [];
+      if (!map.isUsed()) {
+        compiler.#instance!.setRegisterJsTapCount(registerKind, 0);
+        return [];
+      }
       const breakpoints = [
         liteTapable.minStage,
         ...stages,
@@ -1150,6 +1157,7 @@ class Compiler {
         });
       }
       compiler.#decorateJsTaps(jsTaps);
+      compiler.#instance!.setRegisterJsTapCount(registerKind, jsTaps.length);
       return jsTaps;
     };
     getTaps.registerKind = registerKind;
