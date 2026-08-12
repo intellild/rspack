@@ -1,11 +1,11 @@
 #![allow(clippy::too_many_arguments)]
 
 use rspack_core::{
-  ChunkInitFragments, ChunkUkey, Compilation, CompilationParams, CompilerCompilation,
-  InitFragmentExt, InitFragmentKey, InitFragmentStage, Module, NormalInitFragment, Plugin,
-  RuntimeCodeTemplate, RuntimeGlobals,
+  ChunkInitFragments, ChunkUkey, Compilation, CompilationParams, CompilationSeal,
+  CompilerCompilation, InitFragmentExt, InitFragmentKey, InitFragmentStage, Module,
+  NormalInitFragment, Plugin, RuntimeCodeTemplate, RuntimeGlobals,
 };
-use rspack_error::Result;
+use rspack_error::{Diagnostic, Result};
 use rspack_hook::{plugin, plugin_hook};
 
 use crate::{JavascriptModulesRenderModuleContent, JsPlugin, RenderSource};
@@ -13,6 +13,25 @@ use crate::{JavascriptModulesRenderModuleContent, JsPlugin, RenderSource};
 #[plugin]
 #[derive(Debug, Default)]
 pub struct APIPlugin;
+
+#[plugin]
+#[derive(Debug, Default)]
+pub struct TemporaryBuiltinPlugin;
+
+#[plugin_hook(CompilationSeal for TemporaryBuiltinPlugin)]
+async fn temporary_builtin_seal(
+  &self,
+  compilation: &Compilation,
+  _diagnostics: &mut Vec<Diagnostic>,
+) -> Result<()> {
+  compilation
+    .plugin_driver
+    .compilation_hooks
+    .temporary_builtin
+    .call(compilation)
+    .await?;
+  Ok(())
+}
 
 #[plugin_hook(CompilerCompilation for APIPlugin)]
 async fn compilation(
@@ -81,6 +100,20 @@ impl Plugin for APIPlugin {
 
   fn apply(&self, ctx: &mut rspack_core::ApplyContext<'_>) -> Result<()> {
     ctx.compiler_hooks.compilation.tap(compilation::new(self));
+    Ok(())
+  }
+}
+
+impl Plugin for TemporaryBuiltinPlugin {
+  fn name(&self) -> &'static str {
+    "rspack.TemporaryBuiltinPlugin"
+  }
+
+  fn apply(&self, ctx: &mut rspack_core::ApplyContext<'_>) -> Result<()> {
+    ctx
+      .compilation_hooks
+      .seal
+      .tap(temporary_builtin_seal::new(self));
     Ok(())
   }
 }

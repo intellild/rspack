@@ -590,6 +590,7 @@ export declare enum BuiltinPluginName {
   ModuleConcatenationPlugin = 'ModuleConcatenationPlugin',
   CssModulesPlugin = 'CssModulesPlugin',
   APIPlugin = 'APIPlugin',
+  TemporaryBuiltinPlugin = 'TemporaryBuiltinPlugin',
   RuntimeChunkPlugin = 'RuntimeChunkPlugin',
   SizeLimitsPlugin = 'SizeLimitsPlugin',
   NoEmitOnErrorsPlugin = 'NoEmitOnErrorsPlugin',
@@ -3226,23 +3227,24 @@ export declare enum RegisterJsTapKind {
   ContextModuleFactoryBeforeResolve = 33,
   ContextModuleFactoryAfterResolve = 34,
   ExternalModuleChunkCondition = 35,
-  JavascriptModulesChunkHash = 36,
-  HtmlPluginBeforeAssetTagGeneration = 37,
-  HtmlPluginAlterAssetTags = 38,
-  HtmlPluginAlterAssetTagGroups = 39,
-  HtmlPluginAfterTemplateExecution = 40,
-  HtmlPluginBeforeEmit = 41,
-  HtmlPluginAfterEmit = 42,
-  RuntimePluginCreateScript = 43,
-  RuntimePluginCreateLink = 44,
-  RuntimePluginLinkPreload = 45,
-  RuntimePluginLinkPrefetch = 46,
-  RealContentHashPluginUpdateHash = 47,
-  RsdoctorPluginModuleGraph = 48,
-  RsdoctorPluginChunkGraph = 49,
-  RsdoctorPluginModuleIds = 50,
-  RsdoctorPluginModuleSources = 51,
-  RsdoctorPluginAssets = 52
+  TemporaryBuiltin = 36,
+  JavascriptModulesChunkHash = 37,
+  HtmlPluginBeforeAssetTagGeneration = 38,
+  HtmlPluginAlterAssetTags = 39,
+  HtmlPluginAlterAssetTagGroups = 40,
+  HtmlPluginAfterTemplateExecution = 41,
+  HtmlPluginBeforeEmit = 42,
+  HtmlPluginAfterEmit = 43,
+  RuntimePluginCreateScript = 44,
+  RuntimePluginCreateLink = 45,
+  RuntimePluginLinkPreload = 46,
+  RuntimePluginLinkPrefetch = 47,
+  RealContentHashPluginUpdateHash = 48,
+  RsdoctorPluginModuleGraph = 49,
+  RsdoctorPluginChunkGraph = 50,
+  RsdoctorPluginModuleIds = 51,
+  RsdoctorPluginModuleSources = 52,
+  RsdoctorPluginAssets = 53
 }
 
 export interface RegisterJsTaps {
@@ -3282,6 +3284,7 @@ export interface RegisterJsTaps {
   registerContextModuleFactoryBeforeResolveTaps: (stages: Array<number>) => Array<{ function: ((arg: false | JsContextModuleFactoryBeforeResolveData) => Promise<false | JsContextModuleFactoryBeforeResolveData>); stage: number; }>
   registerContextModuleFactoryAfterResolveTaps: (stages: Array<number>) => Array<{ function: ((arg: false | JsContextModuleFactoryAfterResolveData) => Promise<false | JsContextModuleFactoryAfterResolveData>); stage: number; }>
   registerExternalModuleChunkConditionTaps: (stages: Array<number>) => Array<{ function: ((chunk: Chunk) => boolean | undefined); stage: number; }>
+  registerTemporaryBuiltinTaps: (stages: Array<number>) => Array<{ function: ((arg: JsCompilation) => void); stage: number; }>
   registerJavascriptModulesChunkHashTaps: (stages: Array<number>) => Array<{ function: ((arg: Chunk) => Buffer); stage: number; }>
   registerHtmlPluginBeforeAssetTagGenerationTaps: (stages: Array<number>) => Array<{ function: ((arg: JsBeforeAssetTagGenerationData) => JsBeforeAssetTagGenerationData); stage: number; }>
   registerHtmlPluginAlterAssetTagsTaps: (stages: Array<number>) => Array<{ function: ((arg: JsAlterAssetTagsData) => JsAlterAssetTagsData); stage: number; }>

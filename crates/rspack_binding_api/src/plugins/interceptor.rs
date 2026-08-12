@@ -45,7 +45,7 @@ use rspack_core::{
   NormalModuleFactoryFactorizeHook, NormalModuleFactoryResolve,
   NormalModuleFactoryResolveForScheme, NormalModuleFactoryResolveForSchemeHook,
   NormalModuleFactoryResolveHook, NormalModuleFactoryResolveResult, ResourceData, RuntimeGlobals,
-  RuntimeModule, RuntimeModuleGenerateContext, Scheme,
+  RuntimeModule, RuntimeModuleGenerateContext, Scheme, TemporaryBuiltin, TemporaryBuiltinHook,
   build_module_graph::BuildModuleGraphArtifact, parse_resource, rspack_sources::RawStringSource,
 };
 use rspack_error::Diagnostic;
@@ -475,6 +475,7 @@ pub enum RegisterJsTapKind {
   ContextModuleFactoryBeforeResolve,
   ContextModuleFactoryAfterResolve,
   ExternalModuleChunkCondition,
+  TemporaryBuiltin,
   JavascriptModulesChunkHash,
   HtmlPluginBeforeAssetTagGeneration,
   HtmlPluginAlterAssetTags,
@@ -652,6 +653,10 @@ pub struct RegisterJsTaps {
     ts_type = "(stages: Array<number>) => Array<{ function: ((chunk: Chunk) => boolean | undefined); stage: number; }>"
   )]
   pub register_external_module_chunk_condition_taps: RegisterFunction,
+  #[napi(
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsCompilation) => void); stage: number; }>"
+  )]
+  pub register_temporary_builtin_taps: RegisterFunction,
   #[napi(
     ts_type = "(stages: Array<number>) => Array<{ function: ((arg: Chunk) => Buffer); stage: number; }>"
   )]
@@ -985,6 +990,13 @@ define_register!(
   tap = ExternalModuleChunkConditionTap<ChunkWrapper, Option<bool>> @ ExternalModuleChunkConditionHook,
   cache = true,
   kind = RegisterJsTapKind::ExternalModuleChunkCondition,
+  skip = true,
+);
+define_register!(
+  RegisterTemporaryBuiltinTaps,
+  tap = TemporaryBuiltinTap<JsCompilationWrapper, ()> @ TemporaryBuiltinHook,
+  cache = false,
+  kind = RegisterJsTapKind::TemporaryBuiltin,
   skip = true,
 );
 /* JavascriptModules Hooks */
@@ -1864,6 +1876,20 @@ impl ExternalModuleChunkCondition for ExternalModuleChunkConditionTap {
     self
       .function
       .call_with_sync(ChunkWrapper::new(*chunk_ukey, compilation))
+      .await
+  }
+
+  fn stage(&self) -> i32 {
+    self.stage
+  }
+}
+
+#[async_trait]
+impl TemporaryBuiltin for TemporaryBuiltinTap {
+  async fn run(&self, compilation: &Compilation) -> rspack_error::Result<()> {
+    self
+      .function
+      .call_with_sync(JsCompilationWrapper::new(compilation))
       .await
   }
 

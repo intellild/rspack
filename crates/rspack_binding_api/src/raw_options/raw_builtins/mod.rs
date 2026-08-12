@@ -78,8 +78,11 @@ use rspack_plugin_ignore::IgnorePlugin;
 use rspack_plugin_javascript::{
   FlagDependencyExportsPlugin, FlagDependencyUsagePlugin, InferAsyncModulesPlugin,
   InlineExportsPlugin, JsPlugin, MangleExportsPlugin, ModuleConcatenationPlugin,
-  SideEffectsFlagPlugin, api_plugin::APIPlugin, define_plugin::DefinePlugin,
-  provide_plugin::ProvidePlugin, url_plugin::URLPlugin,
+  SideEffectsFlagPlugin,
+  api_plugin::{APIPlugin, TemporaryBuiltinPlugin},
+  define_plugin::DefinePlugin,
+  provide_plugin::ProvidePlugin,
+  url_plugin::URLPlugin,
 };
 use rspack_plugin_json::JsonPlugin;
 use rspack_plugin_library::enable_library_plugin;
@@ -226,6 +229,7 @@ pub enum BuiltinPluginName {
   ModuleConcatenationPlugin,
   CssModulesPlugin,
   APIPlugin,
+  TemporaryBuiltinPlugin,
   RuntimeChunkPlugin,
   SizeLimitsPlugin,
   NoEmitOnErrorsPlugin,
@@ -718,6 +722,9 @@ impl<'a> BuiltinPlugin<'a> {
       }
       BuiltinPluginName::CssModulesPlugin => plugins.push(CssPlugin::default().boxed()),
       BuiltinPluginName::APIPlugin => plugins.push(APIPlugin::default().boxed()),
+      BuiltinPluginName::TemporaryBuiltinPlugin => {
+        plugins.push(TemporaryBuiltinPlugin::default().boxed())
+      }
       BuiltinPluginName::RuntimeChunkPlugin => plugins.push(
         RuntimeChunkPlugin::new(
           downcast_into::<RawRuntimeChunkOptions>(self.options)

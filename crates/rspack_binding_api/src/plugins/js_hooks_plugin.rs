@@ -59,6 +59,7 @@ pub struct JsHooksAdapterPlugin {
     RegisterContextModuleFactoryBeforeResolveTaps,
   register_context_module_factory_after_resolve_taps: RegisterContextModuleFactoryAfterResolveTaps,
   register_external_module_chunk_condition_taps: RegisterExternalModuleChunkConditionTaps,
+  register_temporary_builtin_taps: RegisterTemporaryBuiltinTaps,
   register_javascript_modules_chunk_hash_taps: RegisterJavascriptModulesChunkHashTaps,
   register_html_plugin_before_asset_tag_generation_taps:
     RegisterHtmlPluginBeforeAssetTagGenerationTaps,
@@ -211,6 +212,10 @@ impl Plugin for JsHooksAdapterPlugin {
       .compilation_hooks
       .external_module_chunk_condition
       .intercept(self.register_external_module_chunk_condition_taps.clone());
+    ctx
+      .compilation_hooks
+      .temporary_builtin
+      .intercept(self.register_temporary_builtin_taps.clone());
 
     ctx.normal_module_factory_hooks.before_resolve.intercept(
       self
@@ -329,6 +334,7 @@ impl Plugin for JsHooksAdapterPlugin {
     self
       .register_external_module_chunk_condition_taps
       .clear_cache();
+    self.register_temporary_builtin_taps.clear_cache();
     self
       .register_normal_module_factory_before_resolve_taps
       .clear_cache();
@@ -673,6 +679,10 @@ impl JsHooksAdapterPlugin {
             register_js_taps.register_external_module_chunk_condition_taps,
             non_skippable_registers.clone(),
           ),
+        register_temporary_builtin_taps: RegisterTemporaryBuiltinTaps::new(
+          register_js_taps.register_temporary_builtin_taps,
+          non_skippable_registers.clone(),
+        ),
         register_javascript_modules_chunk_hash_taps: RegisterJavascriptModulesChunkHashTaps::new(
           register_js_taps.register_javascript_modules_chunk_hash_taps,
           non_skippable_registers.clone(),

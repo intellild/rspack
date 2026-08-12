@@ -124,6 +124,7 @@ export {
   ProgressPlugin,
   ProvidePlugin,
   RuntimePlugin,
+  TemporaryBuiltinPlugin,
 } from './builtin-plugin';
 export { DllPlugin, type DllPluginOptions } from './lib/DllPlugin';
 export {

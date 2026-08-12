@@ -17,6 +17,7 @@ import {
   createRealContentHashPluginHooksRegisters,
   createRsdoctorPluginHooksRegisters,
   createRuntimePluginHooksRegisters,
+  createTemporaryBuiltinPluginHooksRegisters,
   JsLoaderRspackPlugin,
 } from './builtin-plugin';
 import { canInherentFromParent } from './builtin-plugin/base';
@@ -1030,6 +1031,11 @@ class Compiler {
         createMapTap,
       ),
       ...createRuntimePluginHooksRegisters(
+        getCompiler,
+        createTap,
+        createMapTap,
+      ),
+      ...createTemporaryBuiltinPluginHooksRegisters(
         getCompiler,
         createTap,
         createMapTap,

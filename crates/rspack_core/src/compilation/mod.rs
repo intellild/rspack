@@ -107,6 +107,7 @@ define_hook!(CompilationExecuteModule:
   Series(module: &ModuleIdentifier, runtime_modules: &[Identifier], code_generation_results: &BindingCell<CodeGenerationResults>, execute_module_id: &ExecuteModuleId));
 define_hook!(CompilationFinishModules: Series(compilation: &Compilation, async_modules_artifact: &mut AsyncModulesArtifact, exports_info_artifact: &mut ExportsInfoArtifact, side_effects_state_artifact: &mut SideEffectsStateArtifact));
 define_hook!(CompilationSeal: Series(compilation: &Compilation, diagnostics: &mut Vec<Diagnostic>));
+define_hook!(TemporaryBuiltin: Series(compilation: &Compilation));
 define_hook!(CompilationDependencyReferencedExports: Sync(
   compilation: &Compilation,
   dependency: &DependencyId,
@@ -158,6 +159,7 @@ pub struct CompilationHooks {
   pub external_module_chunk_condition: ExternalModuleChunkConditionHook,
   pub dependency_referenced_exports: CompilationDependencyReferencedExportsHook,
   pub seal: CompilationSealHook,
+  pub temporary_builtin: TemporaryBuiltinHook,
   pub optimize_dependencies: CompilationOptimizeDependenciesHook,
   pub optimize_modules: CompilationOptimizeModulesHook,
   pub after_optimize_modules: CompilationAfterOptimizeModulesHook,
