@@ -3,7 +3,7 @@
 
 use crate::{
   BoxSource, CachedSource, ConcatSource, OriginalSource, RawBufferSource, RawStringSource,
-  ReplaceSource, ReplacementEnforce, Source, SourceExt, SourceMap, SourceMapSource,
+  ReplaceSource, ReplacementEnforce, RopeSource, Source, SourceExt, SourceMap, SourceMapSource,
   SourceMapSourceOptions,
 };
 
@@ -72,6 +72,12 @@ pub enum CacheableSource {
     #[rkyv(omit_bounds)]
     children: Vec<CacheableSource>,
   },
+  /// [`RopeSource`]
+  Rope {
+    /// Canonical in-order child sources. Arena IDs and topology are omitted.
+    #[rkyv(omit_bounds)]
+    children: Vec<CacheableSource>,
+  },
   /// [`ReplaceSource`]
   Replace {
     /// The inner source.
@@ -136,10 +142,18 @@ pub fn to_cacheable(source: &dyn Source) -> CacheableSource {
     };
   }
 
+  if let Some(s) = source.as_any().downcast_ref::<RopeSource>() {
+    return CacheableSource::Rope {
+      children: s
+        .child_sources()
+        .map(|child| to_cacheable(child.as_ref()))
+        .collect(),
+    };
+  }
+
   if let Some(s) = source.as_any().downcast_ref::<ReplaceSource>() {
     let replacements = s
       .replacements()
-      .iter()
       .map(|r| CacheableReplacement {
         start: r.start(),
         end: r.end(),
@@ -192,6 +206,10 @@ pub fn from_cacheable(cacheable: CacheableSource) -> BoxSource {
     CacheableSource::Concat { children } => {
       let children: Vec<BoxSource> = children.into_iter().map(from_cacheable).collect();
       ConcatSource::new(children).boxed()
+    }
+    CacheableSource::Rope { children } => {
+      let children = children.into_iter().map(from_cacheable).collect();
+      RopeSource::from_boxed(children).boxed()
     }
     CacheableSource::Replace {
       inner,

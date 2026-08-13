@@ -46,6 +46,42 @@ The graph can be a DAG because `BoxSource` is `Arc<dyn Source>`. Build mutable `
 `ReplaceSource` values first, then box/share/cache them. `CachedSource` assumes its inner graph will
 not change and has no invalidation mechanism.
 
+### Arena rope composition
+
+`RopeSource` is an immutable arena-backed composition for balanced, streaming source graphs:
+
+```text
+ordered BoxSource children
+       ↓
+bulk-build append-only RopeArena
+  NodeId = NonZeroU32(index + 1)
+       ↓
+balanced Branch nodes + cached NodeSummary
+       ↓
+non-recursive in-order traversal
+       ↓
+source / rope / size / writer / StreamChunks
+```
+
+Arena IDs and branch topology are physical details. Hash, equality, and persistent cache use the
+canonical in-order child sequence, so independently balanced ropes with the same logical children
+have the same identity. `NodeSummary` tracks bytes, final generated line/UTF-16 column, and ASCII
+status without retaining a flattened string.
+
+`TemplateRopeSource` is the mutable boundary for typed placeholders and deliberately does not
+implement `Source`. A `PlaceholderKey` maps to one stable `PlaceholderId` slot, and repeated
+occurrences share the resolved text or frozen child source. `freeze()` rejects unresolved or
+conflicting slots and returns a `RopeSource`; consequently unresolved templates cannot be emitted,
+hashed, mapped, or wrapped in `CachedSource`. Ordinary source text is always a text/child node,
+even when its bytes equal an old marker string.
+
+`ReplaceSource` uses hybrid replacement storage. Monotonic producers retain the compact `Vec`
+append fast path, and small out-of-order lists stay in the same representation because it has lower
+constant cost. A large out-of-order list is bulk-built into an append-only AVL arena; further
+inserts update O(log R) nodes and never move existing replacement payloads. Rendering, mapping,
+hashing, equality, and cache serialization consume a canonical non-recursive in-order iterator.
+Keep replacement offsets in original-source UTF-8 byte units.
+
 This crate owns source representation, transformation, map streaming, encoding/decoding, and
 source-local caching. Output filenames, devtool policy, source-map comments, filesystem lookup,
 asset cache policy, and JavaScript conversion belong to callers.

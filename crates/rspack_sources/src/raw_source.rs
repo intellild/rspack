@@ -53,6 +53,12 @@ impl From<String> for RawStringSource {
   }
 }
 
+impl From<Cow<'static, str>> for RawStringSource {
+  fn from(value: Cow<'static, str>) -> Self {
+    Self(value)
+  }
+}
+
 impl From<&str> for RawStringSource {
   fn from(value: &str) -> Self {
     Self(Cow::Owned(value.to_string()))

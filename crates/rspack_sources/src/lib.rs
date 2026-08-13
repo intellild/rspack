@@ -26,6 +26,8 @@ mod object_pool;
 mod original_source;
 mod raw_source;
 mod replace_source;
+mod rope;
+mod rope_source;
 mod source;
 mod source_content_lines;
 mod source_map_source;
@@ -40,7 +42,12 @@ pub use concat_source::ConcatSource;
 pub use error::{Error, Result};
 pub use original_source::OriginalSource;
 pub use raw_source::{RawBufferSource, RawStringSource};
+#[cfg(feature = "codspeed")]
+#[doc(hidden)]
+pub use replace_source::{LegacyReplaceSourceBenchmark, benchmark_legacy_replacement_build};
 pub use replace_source::{ReplaceSource, Replacement, ReplacementEnforce};
+pub use rope::placeholder::{PlaceholderId, PlaceholderKey, TemplateRopeSource};
+pub use rope_source::RopeSource;
 pub(crate) use source::SourceMapFields;
 pub use source::{
   BoxSource, MapOptions, Mapping, OriginalLocation, Source, SourceExt, SourceMap, SourceValue,

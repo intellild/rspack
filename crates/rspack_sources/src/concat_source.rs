@@ -258,11 +258,11 @@ impl PartialEq for ConcatSource {
 }
 impl Eq for ConcatSource {}
 
-struct ConcatSourceChunks<'source> {
+pub(crate) struct CombinedSourceChunks<'source> {
   children_chunks: Vec<Box<dyn Chunks<'source> + 'source>>,
 }
 
-impl<'source> ConcatSourceChunks<'source> {
+impl<'source> CombinedSourceChunks<'source> {
   fn new(concat_source: &'source ConcatSource) -> Self {
     let children = concat_source.optimized_children();
     let children_chunks = children
@@ -271,9 +271,13 @@ impl<'source> ConcatSourceChunks<'source> {
       .collect::<Vec<_>>();
     Self { children_chunks }
   }
+
+  pub(crate) fn from_chunks(children_chunks: Vec<Box<dyn Chunks<'source> + 'source>>) -> Self {
+    Self { children_chunks }
+  }
 }
 
-impl<'source> Chunks<'source> for ConcatSourceChunks<'source> {
+impl<'source> Chunks<'source> for CombinedSourceChunks<'source> {
   fn stream<'chunk>(
     &'chunk self,
     object_pool: &ObjectPool,
@@ -439,7 +443,7 @@ impl<'source> Chunks<'source> for ConcatSourceChunks<'source> {
 
 impl StreamChunks for ConcatSource {
   fn stream_chunks<'a>(&'a self) -> Box<dyn Chunks<'a> + 'a> {
-    Box::new(ConcatSourceChunks::new(self))
+    Box::new(CombinedSourceChunks::new(self))
   }
 }
 

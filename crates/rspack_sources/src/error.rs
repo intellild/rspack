@@ -12,6 +12,12 @@ pub enum Error {
   Utf8(std::str::Utf8Error),
   /// an I/O related failure
   Io(std::io::Error),
+  /// A template rope was frozen before a placeholder was resolved.
+  UnresolvedPlaceholder(String),
+  /// A placeholder was resolved more than once with different values.
+  ConflictingPlaceholder(String),
+  /// An arena exhausted the `NonZeroU32` node ID space.
+  ArenaOverflow,
 }
 
 impl fmt::Display for Error {
@@ -20,6 +26,19 @@ impl fmt::Display for Error {
       Error::BadJson(err) => write!(f, "bad json: {err}"),
       Error::Utf8(err) => write!(f, "utf8 error: {err}"),
       Error::Io(err) => write!(f, "io error: {err}"),
+      Error::UnresolvedPlaceholder(key) => {
+        write!(
+          f,
+          "cannot freeze template rope: placeholder {key:?} is unresolved"
+        )
+      }
+      Error::ConflictingPlaceholder(key) => {
+        write!(
+          f,
+          "placeholder {key:?} was resolved with conflicting values"
+        )
+      }
+      Error::ArenaOverflow => write!(f, "rope arena exhausted the u32 node ID space"),
     }
   }
 }

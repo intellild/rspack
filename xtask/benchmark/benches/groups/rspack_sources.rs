@@ -19,11 +19,12 @@ use bench_source_map::{benchmark_parse_source_map_from_json, benchmark_source_ma
 use benchmark_repetitive_react_components::{
   benchmark_repetitive_react_components_map, benchmark_repetitive_react_components_source,
 };
-use criterion::Bencher;
+use criterion::{Bencher, BenchmarkId};
 use rspack_benchmark::Criterion;
 use rspack_sources::{
-  BoxSource, CachedSource, ConcatSource, MapOptions, ObjectPool, RawStringSource, Source,
-  SourceExt, SourceMap, SourceMapSource, SourceMapSourceOptions,
+  BoxSource, CachedSource, ConcatSource, LegacyReplaceSourceBenchmark, MapOptions, ObjectPool,
+  OriginalSource, PlaceholderKey, RawStringSource, ReplaceSource, RopeSource, Source, SourceExt,
+  SourceMap, SourceMapSource, SourceMapSourceOptions, TemplateRopeSource,
 };
 
 const HELLOWORLD_JS: &str = include_str!(concat!(
@@ -168,6 +169,292 @@ fn benchmark_concat_source_add_few(b: &mut Bencher) {
   })
 }
 
+fn replacement_order(count: usize, pattern: &str) -> Vec<u32> {
+  let mut order = (0..count as u32).collect::<Vec<_>>();
+  match pattern {
+    "ascending" => {}
+    "descending" => order.reverse(),
+    "random" => {
+      let mut state = 0x9e37_79b9_u32;
+      for i in (1..order.len()).rev() {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        order.swap(i, state as usize % (i + 1));
+      }
+    }
+    "runs" => {
+      let run_count = 6;
+      let run_len = count.div_ceil(run_count);
+      let run_order = [3, 0, 5, 1, 4, 2];
+      order.clear();
+      for run in run_order {
+        let start = run * run_len;
+        let end = (start + run_len).min(count);
+        order.extend((start..end).map(|value| value as u32));
+      }
+    }
+    _ => unreachable!(),
+  }
+  order
+}
+
+fn build_replace_source(order: &[u32]) -> ReplaceSource {
+  let mut source = ReplaceSource::new(RawStringSource::from_static(""));
+  for &position in order {
+    source.insert_static(position * 2, "x", None);
+  }
+  source
+}
+
+fn build_reference_vec(order: &[u32]) -> LegacyReplaceSourceBenchmark {
+  let mut source = LegacyReplaceSourceBenchmark::new(RawStringSource::from_static(""));
+  for &position in order {
+    source.insert_static(position * 2, "x", None);
+  }
+  source
+}
+
+fn assert_replacement_differential(order: &[u32]) {
+  let original = (0..order.len())
+    .map(|index| format!("value_{index:04};\n"))
+    .collect::<String>();
+  let mut expected = ReplaceSource::new(OriginalSource::new(original.clone(), "ordered.js"));
+  let mut actual = ReplaceSource::new(OriginalSource::new(original, "ordered.js"));
+  for position in 0..order.len() as u32 {
+    let start = position * 12;
+    expected.replace(start, start + 5, format!("item_{position}"), None);
+  }
+  for &position in order {
+    let start = position * 12;
+    actual.replace(start, start + 5, format!("item_{position}"), None);
+  }
+  assert_eq!(actual.source(), expected.source());
+  assert_eq!(actual.size(), expected.size());
+  assert_eq!(
+    actual.map(&ObjectPool::default(), &MapOptions::new(true)),
+    expected.map(&ObjectPool::default(), &MapOptions::new(true))
+  );
+  assert_eq!(
+    actual.map(&ObjectPool::default(), &MapOptions::new(false)),
+    expected.map(&ObjectPool::default(), &MapOptions::new(false))
+  );
+}
+
+fn benchmark_replacement_build(
+  group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+) {
+  for count in [16, 128, 1024, 6144] {
+    for pattern in ["ascending", "descending", "random", "runs"] {
+      let order = replacement_order(count, pattern);
+      if count == 1024 {
+        assert_replacement_differential(&order);
+      }
+      if count == 6144 {
+        let stats = build_replace_source(&order).benchmark_replacement_stats();
+        println!(
+          "replacement {pattern}: nodes={}, height={}, bytes/node={}",
+          stats.0, stats.1, stats.2
+        );
+      }
+      group.bench_with_input(
+        BenchmarkId::new(format!("replacement_build/store/{pattern}"), count),
+        &order,
+        |b, order| {
+          b.iter(|| std::hint::black_box(build_replace_source(std::hint::black_box(order))));
+        },
+      );
+      group.bench_with_input(
+        BenchmarkId::new(format!("replacement_build/reference_vec/{pattern}"), count),
+        &order,
+        |b, order| {
+          b.iter(|| std::hint::black_box(build_reference_vec(std::hint::black_box(order))));
+        },
+      );
+    }
+  }
+}
+
+fn composition_children(count: usize) -> Vec<BoxSource> {
+  (0..count)
+    .map(|index| {
+      let text = format!("const value_{index} = {index};\n");
+      if index % 2 == 0 {
+        RawStringSource::from(text).boxed()
+      } else {
+        OriginalSource::new(text, format!("source-{index}.js")).boxed()
+      }
+    })
+    .collect()
+}
+
+fn benchmark_rope_source(
+  group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+) {
+  for count in [16, 128, 1024] {
+    let children = composition_children(count);
+    let concat = ConcatSource::new(children.clone());
+    let rope = RopeSource::from_boxed(children);
+    assert_eq!(concat.source(), rope.source());
+    assert_eq!(concat.size(), rope.size());
+    for columns in [false, true] {
+      assert_eq!(
+        concat.map(&ObjectPool::default(), &MapOptions::new(columns)),
+        rope.map(&ObjectPool::default(), &MapOptions::new(columns)),
+      );
+    }
+
+    group.bench_with_input(
+      BenchmarkId::new("composition/source/concat", count),
+      &concat,
+      |b, source| {
+        b.iter(|| std::hint::black_box(source.source()));
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("composition/source/rope", count),
+      &rope,
+      |b, source| {
+        b.iter(|| std::hint::black_box(source.source()));
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("composition/size/concat", count),
+      &concat,
+      |b, source| {
+        b.iter(|| std::hint::black_box(source.size()));
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("composition/size/rope", count),
+      &rope,
+      |b, source| {
+        b.iter(|| std::hint::black_box(source.size()));
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("composition/map_columns/concat", count),
+      &concat,
+      |b, source| {
+        b.iter(|| std::hint::black_box(source.map(&ObjectPool::default(), &MapOptions::new(true))));
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("composition/map_columns/rope", count),
+      &rope,
+      |b, source| {
+        b.iter(|| std::hint::black_box(source.map(&ObjectPool::default(), &MapOptions::new(true))));
+      },
+    );
+  }
+}
+
+const BENCHMARK_PLACEHOLDER: &str = "__RSPACK_BENCHMARK_PLACEHOLDER__";
+
+fn legacy_placeholder_source(count: usize) -> BoxSource {
+  ConcatSource::new(
+    (0..count)
+      .map(|_| RawStringSource::from(format!("x{BENCHMARK_PLACEHOLDER}")))
+      .collect::<Vec<_>>(),
+  )
+  .boxed()
+}
+
+fn resolve_legacy_placeholders(source: BoxSource) -> String {
+  let materialized = source.source().into_string_lossy();
+  let matches = materialized
+    .match_indices(BENCHMARK_PLACEHOLDER)
+    .map(|(start, marker)| (start, start + marker.len()))
+    .collect::<Vec<_>>();
+  let mut replaced = ReplaceSource::new(source);
+  for (start, end) in matches {
+    replaced.replace_static(start as u32, end as u32, "resolved", None);
+  }
+  replaced.source().into_string_lossy().into_owned()
+}
+
+fn typed_placeholder_template(count: usize) -> (TemplateRopeSource, rspack_sources::PlaceholderId) {
+  let mut template = TemplateRopeSource::new();
+  let id = template.register(PlaceholderKey::from_static("benchmark"));
+  for _ in 0..count {
+    template.append_static("x");
+    template.append_placeholder_id(id);
+  }
+  (template, id)
+}
+
+fn resolve_typed_placeholders(
+  mut template: TemplateRopeSource,
+  id: rspack_sources::PlaceholderId,
+) -> String {
+  template.resolve_static(id, "resolved").unwrap();
+  template
+    .freeze()
+    .unwrap()
+    .source()
+    .into_string_lossy()
+    .into_owned()
+}
+
+fn benchmark_placeholder_resolution(
+  group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+) {
+  for count in [1, 100, 1000] {
+    let expected_source = legacy_placeholder_source(count);
+    let (expected_template, expected_id) = typed_placeholder_template(count);
+    assert_eq!(
+      resolve_legacy_placeholders(expected_source),
+      resolve_typed_placeholders(expected_template, expected_id)
+    );
+    let source = legacy_placeholder_source(count);
+    group.bench_with_input(
+      BenchmarkId::new("placeholder/legacy_scan", count),
+      &source,
+      |b, source| {
+        b.iter(|| {
+          std::hint::black_box(resolve_legacy_placeholders(std::hint::black_box(
+            source.clone(),
+          )))
+        })
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("placeholder/typed", count),
+      &count,
+      |b, _| {
+        b.iter_batched(
+          || typed_placeholder_template(count),
+          |(mut template, id)| {
+            template.resolve_static(id, "resolved").unwrap();
+            let source = template.freeze().unwrap();
+            std::hint::black_box(source.source().into_string_lossy().into_owned())
+          },
+          criterion::BatchSize::SmallInput,
+        )
+      },
+    );
+  }
+
+  let mut collision = TemplateRopeSource::new();
+  collision.append_static(BENCHMARK_PLACEHOLDER);
+  let id = collision.append_placeholder(PlaceholderKey::from_static("collision-check"));
+  collision.resolve_static(id, "resolved").unwrap();
+  assert_eq!(
+    collision.freeze().unwrap().source().into_string_lossy(),
+    format!("{BENCHMARK_PLACEHOLDER}resolved")
+  );
+
+  let mut unresolved = TemplateRopeSource::new();
+  unresolved.append_placeholder(PlaceholderKey::from_static("unresolved"));
+  assert!(unresolved.freeze().is_err());
+
+  let mut conflict = TemplateRopeSource::new();
+  let id = conflict.append_placeholder(PlaceholderKey::from_static("conflict"));
+  conflict.resolve_static(id, "first").unwrap();
+  conflict.resolve_static(id, "first").unwrap();
+  assert!(conflict.resolve_static(id, "second").is_err());
+}
+
 fn bench_rspack_sources(criterion: &mut Criterion) {
   let mut group = criterion.benchmark_group("rspack_sources");
 
@@ -227,6 +514,10 @@ fn bench_rspack_sources(criterion: &mut Criterion) {
     "sources@repetitive_react_components_source",
     benchmark_repetitive_react_components_source,
   );
+
+  benchmark_replacement_build(&mut group);
+  benchmark_rope_source(&mut group);
+  benchmark_placeholder_resolution(&mut group);
 
   group.finish();
 }

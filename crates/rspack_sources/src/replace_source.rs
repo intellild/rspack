@@ -13,6 +13,7 @@ use crate::{
   helpers::{Chunks, GeneratedInfo, StreamChunks, TextSpan, get_map},
   linear_map::LinearMap,
   object_pool::ObjectPool,
+  rope::replacement::{ReplacementIter, ReplacementTree, TREE_CROSSOVER, TreeIter},
   source_content_lines::SourceContentLines,
 };
 
@@ -41,6 +42,80 @@ use crate::{
 pub struct ReplaceSource {
   inner: BoxSource,
   replacements: Vec<Replacement>,
+  replacement_tree: Option<Box<ReplacementTree>>,
+}
+
+/// Feature-gated copy of the legacy replacement container used only for
+/// benchmark comparisons against the production hybrid store.
+#[cfg(feature = "codspeed")]
+#[doc(hidden)]
+pub struct LegacyReplaceSourceBenchmark {
+  _inner: BoxSource,
+  replacements: Vec<Replacement>,
+}
+
+#[cfg(feature = "codspeed")]
+impl LegacyReplaceSourceBenchmark {
+  /// Construct the exact legacy benchmark container.
+  pub fn new<T: SourceExt>(source: T) -> Self {
+    Self {
+      _inner: source.boxed(),
+      replacements: Vec::new(),
+    }
+  }
+
+  /// Exercise the legacy container through the same external call shape.
+  #[inline(always)]
+  pub fn insert_static(&mut self, start: u32, content: &'static str, name: Option<&'static str>) {
+    self.replace_static_with_enforce(start, start, content, name, ReplacementEnforce::Normal);
+  }
+
+  fn replace_static_with_enforce(
+    &mut self,
+    start: u32,
+    end: u32,
+    content: &'static str,
+    name: Option<&'static str>,
+    enforce: ReplacementEnforce,
+  ) {
+    let replacement = Replacement {
+      start,
+      end,
+      content: Cow::Borrowed(content),
+      name: name.map(Cow::Borrowed),
+      enforce,
+      insertion_order: self.replacements.len() as u32,
+    };
+    self.add_replacement(replacement);
+  }
+
+  #[inline]
+  fn add_replacement(&mut self, replacement: Replacement) {
+    if let Some(last) = self.replacements.last() {
+      if replacement >= *last {
+        self.replacements.push(replacement);
+      } else {
+        let insert_at = self
+          .replacements
+          .binary_search(&replacement)
+          .unwrap_or_else(|index| index);
+        self.replacements.insert(insert_at, replacement);
+      }
+    } else {
+      self.replacements.push(replacement);
+    }
+  }
+}
+
+/// Build the exact legacy `Vec::insert` container for a benchmark order.
+#[cfg(feature = "codspeed")]
+#[doc(hidden)]
+pub fn benchmark_legacy_replacement_build(order: &[u32]) -> LegacyReplaceSourceBenchmark {
+  let mut source = LegacyReplaceSourceBenchmark::new(crate::RawStringSource::from_static(""));
+  for &position in order {
+    source.insert_static(position * 2, "x", None);
+  }
+  source
 }
 
 /// Enforce replacement order when two replacement start and end are both equal
@@ -63,7 +138,7 @@ pub struct Replacement {
   content: Cow<'static, str>,
   name: Option<Cow<'static, str>>,
   enforce: ReplacementEnforce,
-  insertion_order: u32,
+  pub(crate) insertion_order: u32,
 }
 
 impl Replacement {
@@ -116,6 +191,7 @@ impl ReplaceSource {
     Self {
       inner: source.boxed(),
       replacements: Vec::new(),
+      replacement_tree: None,
     }
   }
 
@@ -124,9 +200,25 @@ impl ReplaceSource {
     &self.inner
   }
 
-  /// Get the sorted list of replacements.
-  pub fn replacements(&self) -> &[Replacement] {
-    &self.replacements
+  /// Iterate over replacements in canonical sorted order.
+  pub fn replacements(&self) -> impl ExactSizeIterator<Item = &Replacement> {
+    self.replacement_iter()
+  }
+
+  /// Return `(node_count, tree_height, bytes_per_node)` for benchmark reports.
+  #[cfg(feature = "codspeed")]
+  #[doc(hidden)]
+  pub fn benchmark_replacement_stats(&self) -> (usize, u8, usize) {
+    self.replacement_tree.as_deref().map_or_else(
+      || {
+        (
+          self.replacements.len(),
+          0,
+          std::mem::size_of::<Replacement>(),
+        )
+      },
+      ReplacementTree::benchmark_stats,
+    )
   }
 
   /// Insert a content at start.
@@ -153,6 +245,7 @@ impl ReplaceSource {
   /// let mut source = ReplaceSource::new(OriginalSource::new("hello", "file.txt"));
   /// source.insert_static(0, "prefix: ", None);
   /// ```
+  #[inline(always)]
   pub fn insert_static(&mut self, start: u32, content: &'static str, name: Option<&'static str>) {
     self.replace_static_with_enforce(start, start, content, name, ReplacementEnforce::Normal)
   }
@@ -269,6 +362,7 @@ impl ReplaceSource {
   /// let mut source = ReplaceSource::new(OriginalSource::new("hello world", "file.txt"));
   /// source.replace_static_with_enforce(0, 5, "hi", None, ReplacementEnforce::Pre);
   /// ```
+  #[inline(always)]
   pub fn replace_static_with_enforce(
     &mut self,
     start: u32,
@@ -287,34 +381,181 @@ impl ReplaceSource {
     });
   }
 
-  /// Internal helper method to add a replacement to the sorted list.
-  ///
-  /// This method maintains the replacements in sorted order for efficient
-  /// processing. It uses binary search to find the correct insertion point
-  /// when needed, or appends to the end if the replacement comes after all
-  /// existing ones.
+  /// Add a replacement while preserving canonical traversal order.
   #[inline]
-  fn add_replacement(&mut self, replacement: Replacement) {
-    if let Some(last) = self.replacements.last() {
-      let cmp = replacement.cmp(last);
-      if cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal {
-        self.replacements.push(replacement);
-      } else {
-        let insert_at = self
-          .replacements
-          .binary_search_by(|other| other.cmp(&replacement))
-          .unwrap_or_else(|e| e);
-        self.replacements.insert(insert_at, replacement);
-      }
-    } else {
-      self.replacements.push(replacement);
+  fn replacements_are_empty(&self) -> bool {
+    self.replacement_tree.is_none() && self.replacements.is_empty()
+  }
+
+  #[inline]
+  fn replacement_iter(&self) -> ReplacementIter<'_> {
+    match self.replacement_tree.as_deref() {
+      Some(tree) => ReplacementIter::Tree(TreeIter::new(tree)),
+      None => ReplacementIter::Ordered(self.replacements.iter()),
     }
   }
+
+  #[inline(always)]
+  fn add_replacement(&mut self, replacement: Replacement) {
+    if let Some(last) = self.replacements.last() {
+      if replacement < *last {
+        self.add_non_append_replacement(replacement);
+        return;
+      }
+      self.replacements.push(replacement);
+      return;
+    } else if self.replacement_tree.is_none() {
+      self.replacements.push(replacement);
+      return;
+    }
+    self.add_non_append_replacement(replacement);
+  }
+
+  #[cold]
+  #[inline(never)]
+  fn add_non_append_replacement(&mut self, mut replacement: Replacement) {
+    if let Some(tree) = self.replacement_tree.as_mut() {
+      replacement.insertion_order = tree.len() as u32;
+      tree.insert(replacement);
+    } else if self.replacements.is_empty() {
+      self.replacements.push(replacement);
+    } else if self.replacements.len() < TREE_CROSSOVER {
+      let insert_at = self
+        .replacements
+        .binary_search(&replacement)
+        .unwrap_or_else(|index| index);
+      self.replacements.insert(insert_at, replacement);
+    } else {
+      self.promote_replacements(replacement);
+    }
+  }
+
+  #[cold]
+  #[inline(never)]
+  fn promote_replacements(&mut self, replacement: Replacement) {
+    let mut tree = Box::new(ReplacementTree::from_sorted(std::mem::take(
+      &mut self.replacements,
+    )));
+    tree.insert(replacement);
+    self.replacement_tree = Some(tree);
+  }
+}
+
+#[allow(unsafe_code)]
+fn rope_with_replacements<'a>(
+  source: &'a ReplaceSource,
+  mut replacements: impl Iterator<Item = &'a Replacement>,
+  on_chunk: &mut dyn FnMut(&'a str),
+) {
+  let mut pos: usize = 0;
+  let mut replacement = replacements.next();
+  let mut replacement_end: Option<usize> = None;
+  let mut next_replacement = replacement.map(|repl| repl.start as usize);
+
+  source.inner.rope(&mut |chunk| {
+    let mut chunk_pos = 0;
+    let end_pos = pos + chunk.len();
+
+    // Skip over when it has been replaced
+    if let Some(replacement_end) = replacement_end.filter(|replacement_end| *replacement_end > pos)
+    {
+      // Skip over the whole chunk
+      if replacement_end >= end_pos {
+        pos = end_pos;
+        return;
+      }
+      // Partially skip over chunk
+      chunk_pos = replacement_end - pos;
+      pos += chunk_pos;
+    }
+
+    // Is a replacement in the chunk?
+    while let Some(next_replacement_pos) =
+      next_replacement.filter(|next_replacement_pos| *next_replacement_pos < end_pos)
+    {
+      if next_replacement_pos > pos {
+        // Emit chunk until replacement
+        let offset = next_replacement_pos - pos;
+        let chunk_slice = unsafe { chunk.get_unchecked(chunk_pos..(chunk_pos + offset)) };
+        on_chunk(chunk_slice);
+        chunk_pos += offset;
+        pos = next_replacement_pos;
+      }
+      // Insert replacement content split into chunks by lines
+      let current = replacement.expect("next replacement position came from a replacement");
+      on_chunk(&current.content);
+
+      // Remove replaced content by settings this variable
+      replacement_end = if let Some(replacement_end) = replacement_end {
+        Some(replacement_end.max(current.end as usize))
+      } else {
+        Some(current.end as usize)
+      };
+
+      // Move to next replacement
+      replacement = replacements.next();
+      next_replacement = replacement.map(|repl| repl.start as usize);
+
+      // Skip over when it has been replaced
+      let offset =
+        chunk.len() as i64 - end_pos as i64 + replacement_end.unwrap() as i64 - chunk_pos as i64;
+      if offset > 0 {
+        // Skip over whole chunk
+        if replacement_end.is_some_and(|replacement_end| replacement_end >= end_pos) {
+          pos = end_pos;
+          return;
+        }
+
+        // Partially skip over chunk
+        chunk_pos += offset as usize;
+        pos += offset as usize;
+      }
+    }
+
+    // Emit remaining chunk
+    if chunk_pos < chunk.len() {
+      on_chunk(unsafe { chunk.get_unchecked(chunk_pos..) });
+    }
+    pos = end_pos;
+  });
+
+  // Handle remaining replacements one by one
+  if let Some(replacement) = replacement {
+    on_chunk(&replacement.content);
+  }
+  for replacement in replacements {
+    on_chunk(&replacement.content);
+  }
+}
+
+fn size_with_replacements<'a>(
+  inner_source_size: usize,
+  replacements: impl Iterator<Item = &'a Replacement>,
+) -> usize {
+  let mut size = inner_source_size;
+  let mut inner_pos = 0u32;
+
+  for replacement in replacements {
+    if replacement.start as usize >= inner_source_size {
+      size += replacement.content.len();
+      continue;
+    }
+
+    let original_length = replacement
+      .end
+      .saturating_sub(replacement.start.max(inner_pos)) as usize;
+    size = size
+      .saturating_sub(original_length)
+      .saturating_add(replacement.content.len());
+    inner_pos = inner_pos.max(replacement.end);
+  }
+
+  size
 }
 
 impl Source for ReplaceSource {
   fn source(&self) -> SourceValue<'_> {
-    if self.replacements.is_empty() {
+    if self.replacements_are_empty() {
       return self.inner.source();
     }
 
@@ -325,97 +566,15 @@ impl Source for ReplaceSource {
     SourceValue::String(Cow::Owned(string))
   }
 
-  #[allow(unsafe_code)]
   fn rope<'a>(&'a self, on_chunk: &mut dyn FnMut(&'a str)) {
-    if self.replacements.is_empty() {
+    if self.replacements_are_empty() {
       return self.inner.rope(on_chunk);
     }
 
-    let mut pos: usize = 0;
-    let mut replacement_idx: usize = 0;
-    let mut replacement_end: Option<usize> = None;
-    let mut next_replacement: Option<usize> = self
-      .replacements
-      .get(replacement_idx)
-      .map(|repl| repl.start as usize);
-
-    self.inner.rope(&mut |chunk| {
-      let mut chunk_pos = 0;
-      let end_pos = pos + chunk.len();
-
-      // Skip over when it has been replaced
-      if let Some(replacement_end) =
-        replacement_end.filter(|replacement_end| *replacement_end > pos)
-      {
-        // Skip over the whole chunk
-        if replacement_end >= end_pos {
-          pos = end_pos;
-          return;
-        }
-        // Partially skip over chunk
-        chunk_pos = replacement_end - pos;
-        pos += chunk_pos;
-      }
-
-      // Is a replacement in the chunk?
-      while let Some(next_replacement_pos) =
-        next_replacement.filter(|next_replacement_pos| *next_replacement_pos < end_pos)
-      {
-        if next_replacement_pos > pos {
-          // Emit chunk until replacement
-          let offset = next_replacement_pos - pos;
-          let chunk_slice = unsafe { chunk.get_unchecked(chunk_pos..(chunk_pos + offset)) };
-          on_chunk(chunk_slice);
-          chunk_pos += offset;
-          pos = next_replacement_pos;
-        }
-        // Insert replacement content split into chunks by lines
-        let replacement = unsafe { self.replacements.get_unchecked(replacement_idx) };
-        on_chunk(&replacement.content);
-
-        // Remove replaced content by settings this variable
-        replacement_end = if let Some(replacement_end) = replacement_end {
-          Some(replacement_end.max(replacement.end as usize))
-        } else {
-          Some(replacement.end as usize)
-        };
-
-        // Move to next replacement
-        replacement_idx += 1;
-        next_replacement = self
-          .replacements
-          .get(replacement_idx)
-          .map(|repl| repl.start as usize);
-
-        // Skip over when it has been replaced
-        let offset =
-          chunk.len() as i64 - end_pos as i64 + replacement_end.unwrap() as i64 - chunk_pos as i64;
-        if offset > 0 {
-          // Skip over whole chunk
-          if replacement_end.is_some_and(|replacement_end| replacement_end >= end_pos) {
-            pos = end_pos;
-            return;
-          }
-
-          // Partially skip over chunk
-          chunk_pos += offset as usize;
-          pos += offset as usize;
-        }
-      }
-
-      // Emit remaining chunk
-      if chunk_pos < chunk.len() {
-        on_chunk(unsafe { chunk.get_unchecked(chunk_pos..) });
-      }
-      pos = end_pos;
-    });
-
-    // Handle remaining replacements one by one
-    while replacement_idx < self.replacements.len() {
-      let replacement = unsafe { self.replacements.get_unchecked(replacement_idx) };
-      let content = &replacement.content;
-      on_chunk(content);
-      replacement_idx += 1;
+    if let Some(tree) = self.replacement_tree.as_deref() {
+      rope_with_replacements(self, TreeIter::new(tree), on_chunk);
+    } else {
+      rope_with_replacements(self, self.replacements.iter(), on_chunk);
     }
   }
 
@@ -426,45 +585,19 @@ impl Source for ReplaceSource {
   fn size(&self) -> usize {
     let inner_source_size = self.inner.size();
 
-    if self.replacements.is_empty() {
+    if self.replacements_are_empty() {
       return inner_source_size;
     }
 
-    // Simulate the replacement process to calculate accurate size
-    let mut size = inner_source_size;
-    let mut inner_pos = 0u32;
-
-    for replacement in self.replacements.iter() {
-      // Add original content before replacement
-      if inner_pos < replacement.start {
-        // This content is already counted in inner_source_size, so no change needed
-      }
-      if replacement.start as usize >= inner_source_size {
-        size += replacement.content.len();
-        continue;
-      }
-
-      // Handle the replacement itself
-      let original_length = replacement
-        .end
-        .saturating_sub(replacement.start.max(inner_pos)) as usize;
-      let replacement_length = replacement.content.len();
-
-      // Subtract original content length and add replacement content length
-      size = size
-        .saturating_sub(original_length)
-        .saturating_add(replacement_length);
-
-      // Move position forward, handling overlaps
-      inner_pos = inner_pos.max(replacement.end);
+    if let Some(tree) = self.replacement_tree.as_deref() {
+      size_with_replacements(inner_source_size, TreeIter::new(tree))
+    } else {
+      size_with_replacements(inner_source_size, self.replacements.iter())
     }
-
-    size
   }
 
   fn map(&self, object_pool: &ObjectPool, options: &crate::MapOptions) -> Option<SourceMap<'_>> {
-    let replacements = &self.replacements;
-    if replacements.is_empty() {
+    if self.replacements_are_empty() {
       return self.inner.map(object_pool, options);
     }
     let chunks = self.stream_chunks();
@@ -476,7 +609,7 @@ impl Source for ReplaceSource {
     object_pool: &ObjectPool,
     options: &crate::MapOptions,
   ) -> Option<SourceMap<'static>> {
-    if self.replacements.is_empty() {
+    if self.replacements_are_empty() {
       return self.inner.clone().map_static(object_pool, options);
     }
     let owner = self.clone();
@@ -507,7 +640,7 @@ impl std::fmt::Debug for ReplaceSource {
     writeln!(f, "{indent_str}  let mut source = ReplaceSource::new(")?;
     writeln!(f, "{:indent$?}", &self.inner, indent = indent + 4)?;
     writeln!(f, "{indent_str}  );")?;
-    for repl in self.replacements.iter() {
+    for repl in self.replacement_iter() {
       match repl.enforce {
         ReplacementEnforce::Pre => {
           writeln!(
@@ -587,6 +720,7 @@ struct ReplaceSourceChunks<'a> {
   is_original_source: bool,
   chunks: Box<dyn Chunks<'a> + 'a>,
   replacements: &'a [Replacement],
+  replacement_tree: Option<&'a ReplacementTree>,
 }
 
 impl<'a> ReplaceSourceChunks<'a> {
@@ -596,6 +730,7 @@ impl<'a> ReplaceSourceChunks<'a> {
       is_original_source,
       chunks: source.inner.stream_chunks(),
       replacements: &source.replacements,
+      replacement_tree: source.replacement_tree.as_deref(),
     }
   }
 }
@@ -609,12 +744,43 @@ impl<'source> Chunks<'source> for ReplaceSourceChunks<'source> {
     on_source: crate::helpers::OnSource<'_, 'source>,
     on_name: crate::helpers::OnName<'_, 'source>,
   ) -> crate::helpers::GeneratedInfo {
+    if let Some(tree) = self.replacement_tree {
+      self.stream_with_replacements(
+        TreeIter::new(tree),
+        object_pool,
+        options,
+        on_chunk,
+        on_source,
+        on_name,
+      )
+    } else {
+      self.stream_with_replacements(
+        self.replacements.iter(),
+        object_pool,
+        options,
+        on_chunk,
+        on_source,
+        on_name,
+      )
+    }
+  }
+}
+
+impl<'source> ReplaceSourceChunks<'source> {
+  fn stream_with_replacements<'chunk>(
+    &'chunk self,
+    mut repls: impl Iterator<Item = &'source Replacement>,
+    object_pool: &ObjectPool,
+    options: &MapOptions,
+    on_chunk: crate::helpers::OnChunk<'_, 'chunk>,
+    on_source: crate::helpers::OnSource<'_, 'source>,
+    on_name: crate::helpers::OnName<'_, 'source>,
+  ) -> crate::helpers::GeneratedInfo {
     let on_name = RefCell::new(on_name);
-    let repls = &self.replacements;
+    let mut repl = repls.next();
     let mut pos: u32 = 0;
-    let mut i: usize = 0;
     let mut replacement_end: Option<u32> = None;
-    let mut next_replacement = (i < repls.len()).then(|| repls[i].start);
+    let mut next_replacement = repl.map(|repl| repl.start);
     let mut generated_line_offset: i64 = 0;
     let mut generated_column_offset: i64 = 0;
     let mut generated_column_offset_line = 0;
@@ -781,14 +947,14 @@ impl<'source> Chunks<'source> for ReplaceSourceChunks<'source> {
           // Insert replacement content split into chunks by lines
           #[allow(unsafe_code)]
           // SAFETY: The safety of this operation relies on the fact that the `ReplaceSource` type will not delete the `replacements` during its entire lifetime.
-          let repl = &repls[i];
+          let current_repl = repl.expect("next replacement position came from a replacement");
 
           let mut replacement_name_index = mapping
             .original
             .as_ref()
             .and_then(|original| original.name_index);
           if mapping.original.is_some() {
-            if let Some(name) = repl.name.as_ref() {
+            if let Some(name) = current_repl.name.as_ref() {
               let mut name_mapping = name_mapping.borrow_mut();
               let mut global_index = name_mapping.get(name.as_ref()).copied();
               if global_index.is_none() {
@@ -800,7 +966,7 @@ impl<'source> Chunks<'source> for ReplaceSourceChunks<'source> {
               replacement_name_index = global_index;
             }
           }
-          let content = repl.content.as_ref();
+          let content = current_repl.content.as_ref();
           let content_is_ascii = content.is_ascii();
           for_each_line(content, |content_line, ends_with_newline| {
             let content_chunk = TextSpan::with_ascii(content_line, content_is_ascii);
@@ -849,18 +1015,14 @@ impl<'source> Chunks<'source> for ReplaceSourceChunks<'source> {
 
           // Remove replaced content by settings this variable
           replacement_end = if let Some(replacement_end) = replacement_end {
-            Some(replacement_end.max(repl.end))
+            Some(replacement_end.max(current_repl.end))
           } else {
-            Some(repl.end)
+            Some(current_repl.end)
           };
 
           // Move to next replacement
-          i += 1;
-          next_replacement = if i < repls.len() {
-            Some(repls[i].start)
-          } else {
-            None
-          };
+          repl = repls.next();
+          next_replacement = repl.map(|repl| repl.start);
 
           // Skip over when it has been replaced
           let offset = chunk.len() as i64 - end_pos as i64 + replacement_end.unwrap() as i64
@@ -982,8 +1144,8 @@ impl<'source> Chunks<'source> for ReplaceSourceChunks<'source> {
 
     // Handle remaining replacements one by one
     let mut line = result.generated_line as i64 + generated_line_offset;
-    while i < repls.len() {
-      let content = repls[i].content.as_ref();
+    while let Some(current_repl) = repl {
+      let content = current_repl.content.as_ref();
       let content_is_ascii = content.is_ascii();
 
       for_each_line(content, |content_line, ends_with_newline| {
@@ -1020,7 +1182,7 @@ impl<'source> Chunks<'source> for ReplaceSourceChunks<'source> {
         }
       });
 
-      i += 1;
+      repl = repls.next();
     }
 
     GeneratedInfo {
@@ -1046,6 +1208,7 @@ impl Clone for ReplaceSource {
     Self {
       inner: self.inner.clone(),
       replacements: self.replacements.clone(),
+      replacement_tree: self.replacement_tree.clone(),
     }
   }
 }
@@ -1055,7 +1218,7 @@ impl Hash for ReplaceSource {
     "ReplaceSource".hash(state);
     // replacements are ordered, so when hashing,
     // skip fields (enforce and insertion_order) that are only used
-    for repl in &self.replacements {
+    for repl in self.replacement_iter() {
       repl.start.hash(state);
       repl.end.hash(state);
       repl.content.hash(state);
@@ -1067,7 +1230,12 @@ impl Hash for ReplaceSource {
 
 impl PartialEq for ReplaceSource {
   fn eq(&self, other: &Self) -> bool {
-    self.inner.as_ref() == other.inner.as_ref() && self.replacements == other.replacements
+    self.inner.as_ref() == other.inner.as_ref()
+      && self.replacement_iter().len() == other.replacement_iter().len()
+      && self
+        .replacement_iter()
+        .zip(other.replacement_iter())
+        .all(|(a, b)| a == b)
   }
 }
 
