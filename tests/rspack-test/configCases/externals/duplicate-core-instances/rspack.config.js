@@ -67,6 +67,5 @@ module.exports = {
   plugins: [
     new DuplicateCoreInstancesPlugin(),
     new ExternalModuleChunkConditionPlugin(),
-    new core.TemporaryBuiltinPlugin(),
   ],
 };
