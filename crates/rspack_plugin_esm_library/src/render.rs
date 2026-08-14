@@ -4,16 +4,18 @@ use std::{borrow::Cow, sync::Arc};
 
 use rspack_collections::IdentifierIndexSet;
 use rspack_core::{
-  AssetInfo, Chunk, ChunkGraph, ChunkGroup, ChunkRenderContext, ChunkUkey, Compilation,
-  ConcatenatedModuleInfo, InitFragment, ModuleIdentifier, PathData, PathInfo, RuntimeCodeTemplate,
-  RuntimeGlobals, RuntimeVariable, SourceType, export_name, get_js_chunk_filename_template,
-  get_undo_path, render_init_fragments,
-  rspack_sources::{ConcatSource, RawStringSource, ReplaceSource, Source, SourceExt},
+  AUTO_PUBLIC_PATH_JS_PLACEHOLDER_KEY_PREFIX, AssetInfo, Chunk, ChunkGraph, ChunkGroup,
+  ChunkRenderContext, ChunkUkey, Compilation, ConcatenatedModuleInfo, InitFragment,
+  ModuleIdentifier, PathData, PathInfo, RuntimeCodeTemplate, RuntimeGlobals, RuntimeVariable,
+  SourceType, export_name, get_js_chunk_filename_template, get_undo_path, render_init_fragments,
+  rspack_sources::{
+    ConcatSource, RawStringSource, ReplaceSource, Source, SourceExt, replace_source_placeholders,
+  },
 };
 use rspack_error::Result;
 use rspack_plugin_javascript::{
   JsPlugin, RenderSource,
-  runtime::{AUTO_PUBLIC_PATH_PLACEHOLDER, render_module, render_runtime_modules},
+  runtime::{render_module, render_runtime_modules},
   url_plugin::replace_static_url_placeholders,
 };
 use rspack_util::{
@@ -25,6 +27,7 @@ use rspack_util::{
 use self::runtime_mode::{RuntimeImportRenderContext, RuntimeRenderContext, renderer_for};
 use crate::{
   chunk_link::{ChunkLinkContext, ReExportFrom, Ref},
+  placeholder::esm_chunk_placeholder,
   plugin::RSPACK_ESM_RUNTIME_CHUNK,
 };
 
@@ -496,10 +499,9 @@ var {} = {{}};
         .expect_get(chunk);
 
       if imported.is_empty() {
-        import_source.add(RawStringSource::from(format!(
-          "import \"__RSPACK_ESM_CHUNK_{}\";\n",
-          chunk.expect_id().as_str()
-        )));
+        import_source.add(RawStringSource::from_static("import \""));
+        import_source.add(esm_chunk_placeholder(chunk.expect_id().as_str()));
+        import_source.add(RawStringSource::from_static("\";\n"));
       } else {
         let mut stmt = String::with_capacity(imported.len() * 30 + 40);
         stmt.push_str("import { ");
@@ -517,10 +519,10 @@ var {} = {{}};
             stmt.push_str(&local_name);
           }
         }
-        stmt.push_str(" } from \"__RSPACK_ESM_CHUNK_");
-        stmt.push_str(chunk.expect_id().as_str());
-        stmt.push_str("\";\n");
+        stmt.push_str(" } from \"");
         import_source.add(RawStringSource::from(stmt));
+        import_source.add(esm_chunk_placeholder(chunk.expect_id().as_str()));
+        import_source.add(RawStringSource::from_static("\";\n"));
       }
     }
 
@@ -632,17 +634,7 @@ var {} = {{}};
       let mut export_symbols = export_symbols.iter().collect::<Vec<_>>();
       export_symbols.sort_by(|a, b| a.0.cmp(b.0));
 
-      let from_str = match re_export_from {
-        crate::chunk_link::ReExportFrom::Chunk(chunk_ukey) => {
-          let chunk = compilation
-            .build_chunk_graph_artifact
-            .chunk_by_ukey
-            .expect_get(chunk_ukey);
-          Cow::Owned(format!("__RSPACK_ESM_CHUNK_{}", chunk.expect_id().as_str()))
-        }
-        crate::chunk_link::ReExportFrom::Request(request) => Cow::Borrowed(request.as_str()),
-      };
-      let mut stmt = String::with_capacity(export_symbols.len() * 30 + from_str.len() + 30);
+      let mut stmt = String::with_capacity(export_symbols.len() * 30 + 30);
       stmt.push_str("export { ");
       let mut first = true;
       for (imported, exports) in &export_symbols {
@@ -663,9 +655,20 @@ var {} = {{}};
         }
       }
       stmt.push_str(" } from \"");
-      stmt.push_str(&from_str);
-      stmt.push_str("\";\n");
       final_source.add(RawStringSource::from(stmt));
+      match re_export_from {
+        crate::chunk_link::ReExportFrom::Chunk(chunk_ukey) => {
+          let chunk = compilation
+            .build_chunk_graph_artifact
+            .chunk_by_ukey
+            .expect_get(chunk_ukey);
+          final_source.add(esm_chunk_placeholder(chunk.expect_id().as_str()));
+        }
+        crate::chunk_link::ReExportFrom::Request(request) => {
+          final_source.add(RawStringSource::from(request.clone()));
+        }
+      }
+      final_source.add(RawStringSource::from_static("\";\n"));
     }
 
     if let Some(default_export) = export_default {
@@ -679,31 +682,21 @@ var {} = {{}};
     }
 
     let final_source = if replace_auto_public_path {
-      let mut replace_source = ReplaceSource::new(final_source);
-      let mut replacement = vec![];
-      for (start, matched) in replace_source
-        .source()
-        .into_string_lossy()
-        .match_indices(AUTO_PUBLIC_PATH_PLACEHOLDER)
-      {
-        let start = start as u32;
-        let end = (start as usize + matched.len()) as u32;
-        let relative = get_undo_path(
-          &output_path,
-          compilation.options.output.path.to_string(),
-          true,
-        );
-        replacement.push((start, end, relative));
-      }
-
-      for (start, end, relative) in replacement {
-        replace_source.replace(start, end, relative, None);
-      }
-
+      let relative = get_undo_path(
+        &output_path,
+        compilation.options.output.path.to_string(),
+        true,
+      );
       // concate module does this by render_module()
       // however esm module does not have concate module,
       // some replacement needs to be done here
-      replace_source.boxed()
+      replace_source_placeholders(final_source.boxed(), |key| {
+        key
+          .as_str()
+          .strip_prefix(AUTO_PUBLIC_PATH_JS_PLACEHOLDER_KEY_PREFIX)
+          .map(|filename| rspack_util::json_stringify_str(&format!("{relative}{filename}")))
+      })
+      .map_err(|error| rspack_error::error!("{error}"))?
     } else {
       Arc::new(final_source)
     };

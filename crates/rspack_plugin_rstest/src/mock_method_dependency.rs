@@ -2,10 +2,103 @@ use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
   AsContextDependency, AsModuleDependency, ConditionalInitFragment, DependencyCodeGeneration,
   DependencyRange, DependencyTemplate, DependencyTemplateType, DependencyType, InitFragmentExt,
-  InitFragmentKey, InitFragmentStage, NormalInitFragment, RuntimeCondition, RuntimeGlobals,
+  InitFragmentKey, InitFragmentStage, RuntimeCondition, RuntimeGlobals, SourceInitFragment,
   TemplateContext, TemplateReplaceSource,
+  rspack_sources::{ConcatSource, PlaceholderKey, PlaceholderSource, RawStringSource, SourceExt},
 };
 use rspack_util::json_stringify_str;
+const RSTEST_HOIST_PLACEHOLDER_KEY_PREFIX: &str = "rspack:rstest:hoist:";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RstestHoistPlaceholderKind {
+  Start,
+  End,
+  Target,
+}
+
+impl RstestHoistPlaceholderKind {
+  fn as_str(self) -> &'static str {
+    match self {
+      Self::Start => "start",
+      Self::End => "end",
+      Self::Target => "target",
+    }
+  }
+
+  fn from_str(value: &str) -> Option<Self> {
+    match value {
+      "start" => Some(Self::Start),
+      "end" => Some(Self::End),
+      "target" => Some(Self::Target),
+      _ => None,
+    }
+  }
+
+  fn fallback_name(self) -> &'static str {
+    match self {
+      Self::Start => "HOIST_START",
+      Self::End => "HOIST_END",
+      Self::Target => "PLACEHOLDER",
+    }
+  }
+}
+
+pub(crate) struct RstestHoistPlaceholder<'a> {
+  pub kind: RstestHoistPlaceholderKind,
+  pub hoist_id: &'a str,
+  pub request: &'a str,
+}
+
+struct RstestHoistIdentity<'a> {
+  hoist_id: &'a str,
+  request: &'a str,
+}
+fn hoist_placeholder_source(
+  flag: &str,
+  hoist_id: &str,
+  request: &str,
+  kind: RstestHoistPlaceholderKind,
+) -> PlaceholderSource {
+  PlaceholderSource::new(
+    PlaceholderKey::new(format!(
+      "{RSTEST_HOIST_PLACEHOLDER_KEY_PREFIX}{}:{hoist_id}:{request}",
+      kind.as_str()
+    )),
+    format!(
+      "/* RSTEST:{flag}:{hoist_id}:{request}:{} */{}",
+      kind.fallback_name(),
+      if kind == RstestHoistPlaceholderKind::Target {
+        ";"
+      } else {
+        ""
+      }
+    ),
+  )
+}
+fn hoist_end_source(flag: &str, hoist_id: &str, request: &str) -> ConcatSource {
+  let mut source = ConcatSource::default();
+  source.add(RawStringSource::from_static("\n"));
+  source.add(hoist_placeholder_source(
+    flag,
+    hoist_id,
+    request,
+    RstestHoistPlaceholderKind::End,
+  ));
+  source
+}
+
+pub(crate) fn parse_hoist_placeholder(key: &PlaceholderKey) -> Option<RstestHoistPlaceholder<'_>> {
+  let rest = key
+    .as_str()
+    .strip_prefix(RSTEST_HOIST_PLACEHOLDER_KEY_PREFIX)?;
+  let (kind, rest) = rest.split_once(':')?;
+  let (hoist_id, request) = rest.split_once(':')?;
+  Some(RstestHoistPlaceholder {
+    kind: RstestHoistPlaceholderKind::from_str(kind)?,
+    hoist_id,
+    request,
+  })
+}
 
 #[cacheable]
 #[derive(Debug, Clone)]
@@ -222,8 +315,8 @@ impl MockMethodDependencyTemplate {
     hoist_id: &str,
     request: &str,
   ) {
-    let init = NormalInitFragment::new(
-      format!("/* RSTEST:{flag}:{hoist_id}:{request}:PLACEHOLDER */;"),
+    let init = SourceInitFragment::new(
+      hoist_placeholder_source(flag, hoist_id, request, RstestHoistPlaceholderKind::Target).boxed(),
       InitFragmentStage::StageESMImports,
       -2,
       InitFragmentKey::Const(format!("rstest mock_hoist {hoist_id}")),
@@ -289,75 +382,73 @@ impl MockMethodDependencyTemplate {
     hoist_id: &str,
     request: &str,
   ) {
-    let should_hoist = hoist_flag.is_some() && dep.hoist;
-    let hoist_marker = hoist_flag.map(|flag| format!("{flag}:{hoist_id}:{request}"));
+    let Some(flag) = hoist_flag.filter(|_| dep.hoist) else {
+      // No hoisting needed (e.g., `rs.doMock(...)`).
+      Self::transform_without_hoist(source, require_name, mock_method, &dep.callee_range);
+      return;
+    };
 
-    if should_hoist && dep.statement_range.is_some() {
-      // Case 1: Variable declaration with hoisting (e.g., `const mocks = rs.hoisted(...)`)
-      // Wrap the entire statement with hoist markers
+    let hoist = RstestHoistIdentity { hoist_id, request };
+
+    if dep.statement_range.is_some() {
+      // Variable declaration with hoisting (e.g., `const mocks = rs.hoisted(...)`).
       Self::transform_with_statement_hoist(
         source,
         dep,
         require_name,
         mock_method,
-        hoist_marker
-          .as_deref()
-          .expect("hoist marker should exist when should_hoist is true"),
+        flag,
+        &hoist,
         &dep.callee_range,
       );
-    } else if should_hoist {
-      // Case 2: Standalone call with hoisting (e.g., `rs.hoisted(...)` or `rs.mock(...)`)
-      // Wrap just the call expression with hoist markers
+    } else {
+      // Standalone call with hoisting (e.g., `rs.mock(...)`).
       Self::transform_with_call_hoist(
         source,
         dep,
         require_name,
         mock_method,
-        hoist_marker
-          .as_deref()
-          .expect("hoist marker should exist when should_hoist is true"),
+        flag,
+        &hoist,
         &dep.callee_range,
       );
-    } else {
-      // Case 3: No hoisting needed (e.g., `rs.doMock(...)`)
-      // Just replace the callee
-      Self::transform_without_hoist(source, require_name, mock_method, &dep.callee_range);
     }
   }
 
   /// Transform for variable declarations that need hoisting.
   /// Example: `const mocks = rs.hoisted(() => {...})`
-  /// Result: `/* HOIST_START */const mocks = __rspack_require.rstest_hoisted(() => {...})/* HOIST_END */`
   fn transform_with_statement_hoist(
     source: &mut TemplateReplaceSource,
     dep: &MockMethodDependency,
     require_name: &str,
     mock_method: &str,
-    hoist_marker: &str,
+    flag: &str,
+    hoist: &RstestHoistIdentity<'_>,
     callee_range: &DependencyRange,
   ) {
     let stmt_range = dep
       .statement_range
       .expect("statement_range should be Some when transform_with_statement_hoist is called");
 
-    // Insert HOIST_START before the statement
-    source.replace(
+    source.replace_source(
       stmt_range.start,
       stmt_range.start,
-      format!("/* RSTEST:{hoist_marker}:HOIST_START */"),
+      hoist_placeholder_source(
+        flag,
+        hoist.hoist_id,
+        hoist.request,
+        RstestHoistPlaceholderKind::Start,
+      ),
+      None,
+    );
+    source.replace_source(
+      stmt_range.end,
+      stmt_range.end,
+      hoist_end_source(flag, hoist.hoist_id, hoist.request),
       None,
     );
 
-    // Insert HOIST_END after the statement
-    source.replace(
-      stmt_range.end,
-      stmt_range.end,
-      format!("\n/* RSTEST:{hoist_marker}:HOIST_END */"),
-      None,
-    );
-
-    // Comment out original callee and replace with runtime method
-    // `rs.hoisted` -> `/* rs.hoisted */ __rspack_require.rstest_hoisted`
+    // Comment out original callee and replace with runtime method.
     source.replace_static(callee_range.start, callee_range.start, "/* ", None);
     source.replace(
       callee_range.end,
@@ -369,29 +460,34 @@ impl MockMethodDependencyTemplate {
 
   /// Transform for standalone calls that need hoisting.
   /// Example: `rs.mock('./foo', () => {...})`
-  /// Result: `/* rs.mock */ /* HOIST_START */__rspack_require.rstest_mock('./foo', () => {...})/* HOIST_END */`
   fn transform_with_call_hoist(
     source: &mut TemplateReplaceSource,
     dep: &MockMethodDependency,
     require_name: &str,
     mock_method: &str,
-    hoist_marker: &str,
+    flag: &str,
+    hoist: &RstestHoistIdentity<'_>,
     callee_range: &DependencyRange,
   ) {
-    // Comment out original callee and add HOIST_START + runtime method
     source.replace_static(callee_range.start, callee_range.start, "/* ", None);
-    source.replace(
-      callee_range.end,
-      callee_range.end,
-      format!(" */ /* RSTEST:{hoist_marker}:HOIST_START */{require_name}.{mock_method}"),
-      None,
-    );
 
-    // Insert HOIST_END after the call expression
-    source.replace(
+    let mut callee = ConcatSource::default();
+    callee.add(RawStringSource::from_static(" */ "));
+    callee.add(hoist_placeholder_source(
+      flag,
+      hoist.hoist_id,
+      hoist.request,
+      RstestHoistPlaceholderKind::Start,
+    ));
+    callee.add(RawStringSource::from(format!(
+      "{require_name}.{mock_method}"
+    )));
+    source.replace_source(callee_range.end, callee_range.end, callee, None);
+
+    source.replace_source(
       dep.call_expr_range.end,
       dep.call_expr_range.end,
-      format!("\n/* RSTEST:{hoist_marker}:HOIST_END */"),
+      hoist_end_source(flag, hoist.hoist_id, hoist.request),
       None,
     );
   }

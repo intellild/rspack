@@ -4,6 +4,8 @@ use super::{
   summary::NodeSummary,
 };
 use crate::{BoxSource, helpers::utf16_len};
+// Keep child allocations contiguous and in input order. ArenaLeaves relies
+// on this invariant to traverse without a stack or retained leaf-id index.
 
 pub(crate) fn build(sources: Vec<BoxSource>) -> (RopeArena, Option<NodeId>, Vec<NodeId>) {
   let node_capacity = sources.len().saturating_mul(2).saturating_sub(1);
@@ -13,7 +15,11 @@ pub(crate) fn build(sources: Vec<BoxSource>) -> (RopeArena, Option<NodeId>, Vec<
     let summary = summarize(&source);
     leaves.push(
       arena
-        .alloc(Node::ChildSource { source, summary })
+        .alloc(Node::ChildSource {
+          parent: None,
+          source,
+          summary,
+        })
         .expect("bulk-build capacity is checked by NodeId"),
     );
   }
@@ -55,16 +61,18 @@ fn build_balanced(arena: &mut RopeArena, nodes: &[NodeId]) -> Option<NodeId> {
       let right = build_balanced(arena, &nodes[middle..]).expect("right half is non-empty");
       let summary = NodeSummary::combine(arena.get(left).summary(), arena.get(right).summary());
       let height = 1 + height(arena, left).max(height(arena, right));
-      Some(
-        arena
-          .alloc(Node::Branch {
-            left,
-            right,
-            height,
-            summary,
-          })
-          .expect("bulk-build capacity is checked by NodeId"),
-      )
+      let parent = arena
+        .alloc(Node::Branch {
+          parent: None,
+          left,
+          right,
+          height,
+          summary,
+        })
+        .expect("bulk-build capacity is checked by NodeId");
+      arena.get_mut(left).set_parent(parent);
+      arena.get_mut(right).set_parent(parent);
+      Some(parent)
     }
   }
 }

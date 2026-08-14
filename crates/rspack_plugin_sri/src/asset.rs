@@ -5,7 +5,9 @@ use rspack_core::{
   ChunkUkey, Compilation, CompilationAfterProcessAssets, CompilationAssets,
   CompilationProcessAssets, CrossOriginLoading, ManifestAssetType,
   chunk_graph_chunk::ChunkId,
-  rspack_sources::{ReplaceSource, Source},
+  rspack_sources::{
+    PlaceholderKey, Source, collect_placeholder_occurrences, replace_source_placeholders,
+  },
 };
 use rspack_error::{Diagnostic, Result};
 use rspack_hook::plugin_hook;
@@ -17,7 +19,7 @@ use crate::{
   IntegrityCallbackData, SubresourceIntegrityPlugin, SubresourceIntegrityPluginInner,
   config::IntegrityHtmlPlugin,
   integrity::{SubresourceIntegrityHashFunction, compute_integrity},
-  util::{PLACEHOLDER_PREFIX, PLACEHOLDER_REGEX, make_placeholder, use_any_hash},
+  util::{PLACEHOLDER_KEY_PREFIX, make_placeholder_key, use_any_hash},
 };
 
 #[derive(Debug, Clone)]
@@ -25,7 +27,7 @@ struct ProcessChunkResult {
   pub file: String,
   pub source: Option<Arc<dyn Source>>,
   pub warnings: Vec<String>,
-  pub placeholder: Option<String>,
+  pub placeholder: Option<PlaceholderKey>,
   pub integrity: Option<String>,
 }
 
@@ -130,7 +132,7 @@ See https://w3c.github.io/webappsec-subresource-integrity/#cross-origin-data-lea
 
             let mut new_info = info;
             new_info.content_hash.insert(integrity);
-            Ok((Arc::new(source), new_info))
+            Ok((source, new_info))
           })
           .err()
       {
@@ -160,36 +162,29 @@ fn process_chunk_source(
   asset_type: ManifestAssetType,
   chunk_id: Option<&ChunkId>,
   hash_funcs: &Vec<SubresourceIntegrityHashFunction>,
-  hash_by_placeholders: &HashMap<String, String>,
+  hash_by_placeholders: &HashMap<PlaceholderKey, String>,
   hot_update_global: &str,
 ) -> ProcessChunkResult {
-  // generate new source
-  let mut new_source = ReplaceSource::new(source.clone());
-
   let mut warnings = vec![];
   let source_content = source.source().into_string_lossy();
   if source_content.contains(hot_update_global) {
     warnings.push("SubresourceIntegrity: SubResourceIntegrityPlugin may interfere with hot reloading. Consider disabling this plugin in development mode.".to_string());
   }
 
-  // replace placeholders with integrity hash
-  for caps in PLACEHOLDER_REGEX.captures_iter(&source_content) {
-    if let Some(m) = caps.get(0) {
-      let replacement = hash_by_placeholders
-        .get(m.as_str())
-        .map_or(m.as_str(), |i| i.as_str())
-        .to_string();
-      new_source.replace(m.start() as u32, m.end() as u32, replacement, None);
-    }
-  }
+  let new_source = replace_source_placeholders(source, |key| {
+    hash_by_placeholders
+      .get(key)
+      .map(|integrity| rspack_util::json_stringify_str(integrity))
+  })
+  .expect("SRI asset source should fit in u32 offsets");
 
   // compute self integrity and placeholder
   let integrity = compute_integrity(hash_funcs, new_source.source().into_string_lossy().as_ref());
-  let placeholder = chunk_id.map(|id| make_placeholder(asset_type, hash_funcs, id.as_str()));
+  let placeholder = chunk_id.map(|id| make_placeholder_key(&asset_type, id.as_str()));
 
   ProcessChunkResult {
     file: file.to_string(),
-    source: Some(Arc::new(new_source)),
+    source: Some(new_source),
     warnings,
     placeholder,
     integrity: Some(integrity),
@@ -315,13 +310,18 @@ pub async fn detect_unresolved_integrity(
     .values()
   {
     for file in chunk.files() {
-      if let Some(source) = compilation.assets().get(file).and_then(|a| a.get_source())
-        && source
-          .source()
-          .into_string_lossy()
-          .contains(PLACEHOLDER_PREFIX)
-      {
-        contain_unresolved_files.push(file.clone());
+      if let Some(source) = compilation.assets().get(file).and_then(|a| a.get_source()) {
+        let occurrences = collect_placeholder_occurrences(source.as_ref()).map_err(|error| {
+          rspack_error::error!("Failed to inspect SRI placeholders in asset {file}: {error}")
+        })?;
+        if occurrences.iter().any(|occurrence| {
+          occurrence
+            .key()
+            .as_str()
+            .starts_with(PLACEHOLDER_KEY_PREFIX)
+        }) {
+          contain_unresolved_files.push(file.clone());
+        }
       }
     }
   }

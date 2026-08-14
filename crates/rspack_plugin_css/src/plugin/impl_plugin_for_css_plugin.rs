@@ -4,16 +4,16 @@ use std::sync::{Arc, LazyLock};
 
 use atomic_refcell::AtomicRefCell;
 use rspack_core::{
-  AssetInfo, BoxModule, Chunk, ChunkGraph, ChunkKind, ChunkLoading, ChunkLoadingType, ChunkUkey,
-  Compilation, CompilationContentHash, CompilationId, CompilationParams, CompilationRenderManifest,
-  CompilationRuntimeRequirementInTree, CompilerCompilation, CssBuildInfo, CssModuleRenderCondition,
-  DependencyType, ManifestAssetType, Module, ModuleFactoryCreateData, ModuleGraph,
-  ModuleIdentifier, ModuleRule, ModuleType, NormalModuleCreateData,
-  NormalModuleFactoryAfterResolve, NormalModuleFactoryModule, ParserAndGenerator, PathData, Plugin,
-  PublicPath, RenderManifestEntry, RuntimeGlobals, RuntimeModule, RuntimeModuleExt,
-  SelfModuleFactory, SourceType, css_module_render_conditions_identifier,
-  get_css_chunk_filename_template, is_source_equal,
-  rspack_sources::{BoxSource, CachedSource, ReplaceSource, Source, SourceExt},
+  AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX, AssetInfo, BoxModule, Chunk, ChunkGraph, ChunkKind,
+  ChunkLoading, ChunkLoadingType, ChunkUkey, Compilation, CompilationContentHash, CompilationId,
+  CompilationParams, CompilationRenderManifest, CompilationRuntimeRequirementInTree,
+  CompilerCompilation, CssBuildInfo, CssModuleRenderCondition, DependencyType, ManifestAssetType,
+  Module, ModuleFactoryCreateData, ModuleGraph, ModuleIdentifier, ModuleRule, ModuleType,
+  NormalModuleCreateData, NormalModuleFactoryAfterResolve, NormalModuleFactoryModule,
+  ParserAndGenerator, PathData, Plugin, PublicPath, RenderManifestEntry, RuntimeGlobals,
+  RuntimeModule, RuntimeModuleExt, SelfModuleFactory, SourceType,
+  css_module_render_conditions_identifier, get_css_chunk_filename_template, is_source_equal,
+  rspack_sources::{BoxSource, CachedSource, Source, SourceExt, replace_source_placeholders},
 };
 use rspack_error::{Diagnostic, Result, ToStringResultToRspackResultExt};
 use rspack_hash::{RspackHash, RspackHasher};
@@ -36,8 +36,8 @@ use crate::{
   plugin::{CssModulesPluginHooks, CssModulesRenderSource, CssPluginInner},
   runtime::CssLoadingRuntimeModule,
   utils::{
-    AUTO_PUBLIC_PATH_PLACEHOLDER, append_css_export_type_key, css_attribute_export_type,
-    css_dependency_export_type, css_dependency_meta, css_module_has_charset,
+    append_css_export_type_key, css_attribute_export_type, css_dependency_export_type,
+    css_dependency_meta, css_escape_string, css_module_has_charset,
     css_module_is_import_dependency, css_module_resource, css_render_conditions_from_module,
   },
 };
@@ -107,22 +107,14 @@ impl CssPlugin {
     let source =
       Self::render_chunk_to_source(compilation, chunk, &ordered_css_modules, &hooks).await?;
 
-    let content = source.source().into_string_lossy();
-    let len = AUTO_PUBLIC_PATH_PLACEHOLDER.len();
-    let auto_public_path_matches: Vec<_> = content
-      .match_indices(AUTO_PUBLIC_PATH_PLACEHOLDER)
-      .map(|(index, _)| (index, index + len))
-      .collect();
-    let source = if !auto_public_path_matches.is_empty() {
-      let mut replace = ReplaceSource::new(source);
-      for (start, end) in auto_public_path_matches {
-        let relative = PublicPath::render_auto_public_path(compilation, output_path);
-        replace.replace(start as u32, end as u32, relative, None);
-      }
-      replace.boxed()
-    } else {
-      source.boxed()
-    };
+    let relative = PublicPath::render_auto_public_path(compilation, output_path);
+    let source = replace_source_placeholders(source, |key| {
+      key
+        .as_str()
+        .strip_prefix(AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX)
+        .map(|filename| css_escape_string(&format!("{relative}{filename}")))
+    })
+    .map_err(|error| rspack_error::error!("{error}"))?;
     let mut diagnostics = vec![];
     if let Some(conflicts) = conflicts {
       diagnostics.extend(conflicts.into_iter().map(|conflict| {

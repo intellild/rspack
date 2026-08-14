@@ -1,11 +1,9 @@
 mod create_script_url_dependency;
-use std::sync::LazyLock;
 
 use concat_string::concat_string;
 pub use create_script_url_dependency::{
   CreateScriptUrlDependency, CreateScriptUrlDependencyTemplate,
 };
-use regex::Regex;
 use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
   AsContextDependency, Compilation, Dependency, DependencyCategory, DependencyCodeGeneration,
@@ -13,6 +11,9 @@ use rspack_core::{
   ExportsInfoArtifact, FactorizeInfo, JavascriptParserWorkerUrl, ModuleDependency, ModuleGraph,
   ModuleGraphCacheArtifact, ReferencedExport, RuntimeGlobals, RuntimeSpec, TemplateContext,
   TemplateReplaceSource, URLStaticMode,
+  rspack_sources::{
+    BoxSource, PlaceholderKey, PlaceholderSource, RawStringSource, RopeSource, SourceExt,
+  },
 };
 use rspack_hash::{RspackHash, RspackHasher};
 
@@ -55,6 +56,23 @@ impl WorkerDependency {
 
   pub fn public_path(&self) -> &str {
     &self.public_path
+  }
+
+  pub fn replace_request_source(&self, source: &mut TemplateReplaceSource, request: BoxSource) {
+    if let Some(range_request) = self.range_request {
+      source.replace_source(range_request.start, range_request.end, request, None);
+    } else {
+      let mut parts = Vec::with_capacity(3);
+      if self.need_new_url {
+        parts.push(RawStringSource::from_static("new URL(").boxed());
+      }
+      parts.push(request);
+      parts.push(RawStringSource::from_static(", ").boxed());
+      source.insert_source(self.range_path.start, RopeSource::from_boxed(parts), None);
+      if self.need_new_url {
+        source.insert_static(self.range_path.end, ")", None);
+      }
+    }
   }
 
   pub fn replace_request(&self, source: &mut TemplateReplaceSource, request: String) {
@@ -158,13 +176,7 @@ impl AsContextDependency for WorkerDependency {}
 pub struct WorkerDependencyTemplate;
 
 pub static WORKER_STATIC_URL_PLACEHOLDER: &str = "RSPACK_AUTO_WORKER_STATIC_URL_PLACEHOLDER_";
-pub static WORKER_STATIC_URL_PLACEHOLDER_RE: LazyLock<Regex> = LazyLock::new(|| {
-  Regex::new(&concat_string!(
-    WORKER_STATIC_URL_PLACEHOLDER,
-    r#"(?<dep>\d+)"#
-  ))
-  .expect("should be valid regex")
-});
+pub const WORKER_STATIC_URL_PLACEHOLDER_KEY_PREFIX: &str = "rspack:javascript:worker-static-url:";
 
 impl WorkerDependencyTemplate {
   pub fn template_type() -> DependencyTemplateType {
@@ -216,11 +228,18 @@ impl DependencyTemplate for WorkerDependencyTemplate {
     ) && compilation.options.output.module
     {
       code_generatable_context.data.insert(URLStaticMode);
-      let request = rspack_util::json_stringify_str(&concat_string!(
+      let fallback = rspack_util::json_stringify_str(&concat_string!(
         WORKER_STATIC_URL_PLACEHOLDER,
         dep.id.as_u32().to_string()
       ));
-      dep.replace_request(source, request);
+      let request = PlaceholderSource::new(
+        PlaceholderKey::new(concat_string!(
+          WORKER_STATIC_URL_PLACEHOLDER_KEY_PREFIX,
+          dep.id.as_u32().to_string()
+        )),
+        fallback,
+      );
+      dep.replace_request_source(source, request.boxed());
       return;
     } else {
       let worker_import_base_url = if !dep.public_path.is_empty() {

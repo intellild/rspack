@@ -81,7 +81,7 @@ impl LegacyReplaceSourceBenchmark {
     let replacement = Replacement {
       start,
       end,
-      content: Cow::Borrowed(content),
+      content: ReplacementContent::Text(Cow::Borrowed(content)),
       name: name.map(Cow::Borrowed),
       enforce,
       insertion_order: self.replacements.len() as u32,
@@ -130,12 +130,70 @@ pub enum ReplacementEnforce {
   Post,
 }
 
+/// Generated content stored by one replacement.
+#[derive(Clone, PartialEq, Eq)]
+enum ReplacementContent {
+  Text(Cow<'static, str>),
+  Source(BoxSource),
+}
+
+impl ReplacementContent {
+  fn source(&self) -> Cow<'_, str> {
+    match self {
+      Self::Text(content) => Cow::Borrowed(content),
+      Self::Source(source) => source.source().into_string_lossy(),
+    }
+  }
+
+  fn size(&self) -> usize {
+    match self {
+      Self::Text(content) => content.len(),
+      Self::Source(source) => source.size(),
+    }
+  }
+
+  fn rope<'a>(&'a self, on_chunk: &mut dyn FnMut(&'a str)) {
+    match self {
+      Self::Text(content) => on_chunk(content),
+      Self::Source(source) => source.rope(on_chunk),
+    }
+  }
+
+  fn rope_with_placeholders<'a>(&'a self, on_event: &mut dyn FnMut(crate::SourceEvent<'a>)) {
+    match self {
+      Self::Text(content) => on_event(crate::SourceEvent::Text(content)),
+      Self::Source(source) => source.rope_with_placeholders(on_event),
+    }
+  }
+}
+impl Hash for ReplacementContent {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    match self {
+      // Preserve the historical ReplaceSource hash for ordinary text content.
+      Self::Text(content) => content.hash(state),
+      Self::Source(source) => {
+        "ReplacementContent::Source".hash(state);
+        source.hash(state);
+      }
+    }
+  }
+}
+
+impl std::fmt::Debug for ReplacementContent {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::Text(content) => content.fmt(f),
+      Self::Source(source) => source.fmt(f),
+    }
+  }
+}
+
 /// A single text replacement in a [ReplaceSource].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Replacement {
   start: u32,
   end: u32,
-  content: Cow<'static, str>,
+  content: ReplacementContent,
   name: Option<Cow<'static, str>>,
   enforce: ReplacementEnforce,
   pub(crate) insertion_order: u32,
@@ -153,8 +211,16 @@ impl Replacement {
   }
 
   /// Get the replacement content.
-  pub fn content(&self) -> &str {
-    &self.content
+  pub fn content(&self) -> Cow<'_, str> {
+    self.content.source()
+  }
+
+  /// Get structured replacement content, when present.
+  pub fn content_source(&self) -> Option<&BoxSource> {
+    match &self.content {
+      ReplacementContent::Source(source) => Some(source),
+      ReplacementContent::Text(_) => None,
+    }
   }
 
   /// Get the replacement name.
@@ -336,7 +402,7 @@ impl ReplaceSource {
     self.add_replacement(Replacement {
       start,
       end,
-      content: content.into(),
+      content: ReplacementContent::Text(content.into()),
       name: name.map(Into::into),
       enforce,
       insertion_order: self.replacements.len() as u32,
@@ -374,8 +440,48 @@ impl ReplaceSource {
     self.add_replacement(Replacement {
       start,
       end,
-      content: Cow::Borrowed(content),
+      content: ReplacementContent::Text(Cow::Borrowed(content)),
       name: name.map(Cow::Borrowed),
+      enforce,
+      insertion_order: self.replacements.len() as u32,
+    });
+  }
+
+  /// Create a replacement whose generated content is a structured source.
+  pub fn replace_source<T: Source + 'static>(
+    &mut self,
+    start: u32,
+    end: u32,
+    content: T,
+    name: Option<String>,
+  ) {
+    self.replace_source_with_enforce(start, end, content, name, ReplacementEnforce::Normal);
+  }
+
+  /// Insert a structured source at an original source offset.
+  pub fn insert_source<T: Source + 'static>(
+    &mut self,
+    start: u32,
+    content: T,
+    name: Option<String>,
+  ) {
+    self.replace_source(start, start, content, name);
+  }
+
+  /// Create a structured-source replacement with explicit ordering.
+  pub fn replace_source_with_enforce<T: Source + 'static>(
+    &mut self,
+    start: u32,
+    end: u32,
+    content: T,
+    name: Option<String>,
+    enforce: ReplacementEnforce,
+  ) {
+    self.add_replacement(Replacement {
+      start,
+      end,
+      content: ReplacementContent::Source(content.boxed()),
+      name: name.map(Into::into),
       enforce,
       insertion_order: self.replacements.len() as u32,
     });
@@ -442,17 +548,21 @@ impl ReplaceSource {
 }
 
 #[allow(unsafe_code)]
-fn rope_with_replacements<'a>(
+fn rope_events_with_replacements<'a>(
   source: &'a ReplaceSource,
   mut replacements: impl Iterator<Item = &'a Replacement>,
-  on_chunk: &mut dyn FnMut(&'a str),
+  on_event: &mut dyn FnMut(crate::SourceEvent<'a>),
 ) {
   let mut pos: usize = 0;
   let mut replacement = replacements.next();
   let mut replacement_end: Option<usize> = None;
   let mut next_replacement = replacement.map(|repl| repl.start as usize);
 
-  source.inner.rope(&mut |chunk| {
+  source.inner.rope_with_placeholders(&mut |event| {
+    let (chunk, placeholder) = match event {
+      crate::SourceEvent::Text(chunk) => (chunk, None),
+      crate::SourceEvent::Placeholder(key, fallback) => (fallback, Some(key)),
+    };
     let mut chunk_pos = 0;
     let end_pos = pos + chunk.len();
 
@@ -477,13 +587,13 @@ fn rope_with_replacements<'a>(
         // Emit chunk until replacement
         let offset = next_replacement_pos - pos;
         let chunk_slice = unsafe { chunk.get_unchecked(chunk_pos..(chunk_pos + offset)) };
-        on_chunk(chunk_slice);
+        on_event(crate::SourceEvent::Text(chunk_slice));
         chunk_pos += offset;
         pos = next_replacement_pos;
       }
       // Insert replacement content split into chunks by lines
       let current = replacement.expect("next replacement position came from a replacement");
-      on_chunk(&current.content);
+      current.content.rope_with_placeholders(on_event);
 
       // Remove replaced content by settings this variable
       replacement_end = if let Some(replacement_end) = replacement_end {
@@ -514,18 +624,37 @@ fn rope_with_replacements<'a>(
 
     // Emit remaining chunk
     if chunk_pos < chunk.len() {
-      on_chunk(unsafe { chunk.get_unchecked(chunk_pos..) });
+      let chunk = unsafe { chunk.get_unchecked(chunk_pos..) };
+      if chunk_pos == 0 {
+        if let Some(key) = placeholder {
+          on_event(crate::SourceEvent::Placeholder(key, chunk));
+        } else {
+          on_event(crate::SourceEvent::Text(chunk));
+        }
+      } else {
+        on_event(crate::SourceEvent::Text(chunk));
+      }
     }
     pos = end_pos;
   });
 
   // Handle remaining replacements one by one
   if let Some(replacement) = replacement {
-    on_chunk(&replacement.content);
+    replacement.content.rope_with_placeholders(on_event);
   }
   for replacement in replacements {
-    on_chunk(&replacement.content);
+    replacement.content.rope_with_placeholders(on_event);
   }
+}
+
+fn rope_with_replacements<'a>(
+  source: &'a ReplaceSource,
+  replacements: impl Iterator<Item = &'a Replacement>,
+  on_chunk: &mut dyn FnMut(&'a str),
+) {
+  rope_events_with_replacements(source, replacements, &mut |event| match event {
+    crate::SourceEvent::Text(chunk) | crate::SourceEvent::Placeholder(_, chunk) => on_chunk(chunk),
+  });
 }
 
 fn size_with_replacements<'a>(
@@ -537,7 +666,7 @@ fn size_with_replacements<'a>(
 
   for replacement in replacements {
     if replacement.start as usize >= inner_source_size {
-      size += replacement.content.len();
+      size += replacement.content.size();
       continue;
     }
 
@@ -546,7 +675,7 @@ fn size_with_replacements<'a>(
       .saturating_sub(replacement.start.max(inner_pos)) as usize;
     size = size
       .saturating_sub(original_length)
-      .saturating_add(replacement.content.len());
+      .saturating_add(replacement.content.size());
     inner_pos = inner_pos.max(replacement.end);
   }
 
@@ -575,6 +704,17 @@ impl Source for ReplaceSource {
       rope_with_replacements(self, TreeIter::new(tree), on_chunk);
     } else {
       rope_with_replacements(self, self.replacements.iter(), on_chunk);
+    }
+  }
+
+  fn rope_with_placeholders<'a>(&'a self, on_event: &mut dyn FnMut(crate::SourceEvent<'a>)) {
+    if self.replacements_are_empty() {
+      return self.inner.rope_with_placeholders(on_event);
+    }
+    if let Some(tree) = self.replacement_tree.as_deref() {
+      rope_events_with_replacements(self, TreeIter::new(tree), on_event);
+    } else {
+      rope_events_with_replacements(self, self.replacements.iter(), on_event);
     }
   }
 
@@ -966,51 +1106,52 @@ impl<'source> ReplaceSourceChunks<'source> {
               replacement_name_index = global_index;
             }
           }
-          let content = current_repl.content.as_ref();
-          let content_is_ascii = content.is_ascii();
-          for_each_line(content, |content_line, ends_with_newline| {
-            let content_chunk = TextSpan::with_ascii(content_line, content_is_ascii);
-            on_chunk(
-              Some(content_chunk),
-              Mapping {
-                generated_line: line as u32,
-                generated_column: ((mapping.generated_column as i64)
-                  + if line == generated_column_offset_line {
-                    generated_column_offset
+          current_repl.content.rope(&mut |content| {
+            let content_is_ascii = content.is_ascii();
+            for_each_line(content, |content_line, ends_with_newline| {
+              let content_chunk = TextSpan::with_ascii(content_line, content_is_ascii);
+              on_chunk(
+                Some(content_chunk),
+                Mapping {
+                  generated_line: line as u32,
+                  generated_column: ((mapping.generated_column as i64)
+                    + if line == generated_column_offset_line {
+                      generated_column_offset
+                    } else {
+                      0
+                    }) as u32,
+                  original: if mapping.original.and_then(|original| original.name_index)
+                    == replacement_name_index
+                  {
+                    mapping.original
                   } else {
-                    0
-                  }) as u32,
-                original: if mapping.original.and_then(|original| original.name_index)
-                  == replacement_name_index
-                {
-                  mapping.original
-                } else {
-                  mapping.original.map(|original| OriginalLocation {
-                    source_index: original.source_index,
-                    original_line: original.original_line,
-                    original_column: original.original_column,
-                    name_index: replacement_name_index,
-                  })
+                    mapping.original.map(|original| OriginalLocation {
+                      source_index: original.source_index,
+                      original_line: original.original_line,
+                      original_column: original.original_column,
+                      name_index: replacement_name_index,
+                    })
+                  },
                 },
-              },
-            );
-            // Only the first chunk has name assigned
-            replacement_name_index = None;
+              );
+              // Only the first chunk has name assigned
+              replacement_name_index = None;
 
-            if !ends_with_newline {
-              let content_utf16_len = content_chunk.utf16_len() as i64;
-              if generated_column_offset_line == line {
-                generated_column_offset += content_utf16_len;
+              if !ends_with_newline {
+                let content_utf16_len = content_chunk.utf16_len() as i64;
+                if generated_column_offset_line == line {
+                  generated_column_offset += content_utf16_len;
+                } else {
+                  generated_column_offset = content_utf16_len;
+                  generated_column_offset_line = line;
+                }
               } else {
-                generated_column_offset = content_utf16_len;
+                generated_line_offset += 1;
+                line += 1;
+                generated_column_offset = -(mapping.generated_column as i64);
                 generated_column_offset_line = line;
               }
-            } else {
-              generated_line_offset += 1;
-              line += 1;
-              generated_column_offset = -(mapping.generated_column as i64);
-              generated_column_offset_line = line;
-            }
+            });
           });
 
           // Remove replaced content by settings this variable
@@ -1145,41 +1286,41 @@ impl<'source> ReplaceSourceChunks<'source> {
     // Handle remaining replacements one by one
     let mut line = result.generated_line as i64 + generated_line_offset;
     while let Some(current_repl) = repl {
-      let content = current_repl.content.as_ref();
-      let content_is_ascii = content.is_ascii();
+      current_repl.content.rope(&mut |content| {
+        let content_is_ascii = content.is_ascii();
+        for_each_line(content, |content_line, ends_with_newline| {
+          let content_chunk = TextSpan::with_ascii(content_line, content_is_ascii);
+          on_chunk(
+            Some(content_chunk),
+            Mapping {
+              generated_line: line as u32,
+              generated_column: ((result.generated_column as i64)
+                + if line == generated_column_offset_line {
+                  generated_column_offset
+                } else {
+                  0
+                }) as u32,
+              original: None,
+            },
+          );
 
-      for_each_line(content, |content_line, ends_with_newline| {
-        let content_chunk = TextSpan::with_ascii(content_line, content_is_ascii);
-        on_chunk(
-          Some(content_chunk),
-          Mapping {
-            generated_line: line as u32,
-            generated_column: ((result.generated_column as i64)
-              + if line == generated_column_offset_line {
-                generated_column_offset
-              } else {
-                0
-              }) as u32,
-            original: None,
-          },
-        );
-
-        // Handle line and column offset updates
-        if !ends_with_newline {
-          let content_utf16_len = content_chunk.utf16_len() as i64;
-          // Last line of current replacement doesn't end with newline
-          if generated_column_offset_line == line {
-            generated_column_offset += content_utf16_len;
+          // Handle line and column offset updates
+          if !ends_with_newline {
+            let content_utf16_len = content_chunk.utf16_len() as i64;
+            // Last line of current replacement doesn't end with newline
+            if generated_column_offset_line == line {
+              generated_column_offset += content_utf16_len;
+            } else {
+              generated_column_offset = content_utf16_len;
+              generated_column_offset_line = line;
+            }
           } else {
-            generated_column_offset = content_utf16_len;
+            // Line ends with newline or not the last line
+            line += 1;
+            generated_column_offset = -(result.generated_column as i64);
             generated_column_offset_line = line;
           }
-        } else {
-          // Line ends with newline or not the last line
-          line += 1;
-          generated_column_offset = -(result.generated_column as i64);
-          generated_column_offset_line = line;
-        }
+        });
       });
 
       repl = repls.next();

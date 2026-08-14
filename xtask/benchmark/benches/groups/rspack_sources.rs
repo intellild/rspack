@@ -23,8 +23,9 @@ use criterion::{Bencher, BenchmarkId};
 use rspack_benchmark::Criterion;
 use rspack_sources::{
   BoxSource, CachedSource, ConcatSource, LegacyReplaceSourceBenchmark, MapOptions, ObjectPool,
-  OriginalSource, PlaceholderKey, RawStringSource, ReplaceSource, RopeSource, Source, SourceExt,
-  SourceMap, SourceMapSource, SourceMapSourceOptions, TemplateRopeSource,
+  OriginalSource, PlaceholderKey, PlaceholderSource, RawStringSource, ReplaceSource, RopeSource,
+  Source, SourceExt, SourceMap, SourceMapSource, SourceMapSourceOptions, TemplateRopeSource,
+  replace_source_placeholders,
 };
 
 const HELLOWORLD_JS: &str = include_str!(concat!(
@@ -296,7 +297,23 @@ fn benchmark_rope_source(
     let concat = ConcatSource::new(children.clone());
     let rope = RopeSource::from_boxed(children);
     assert_eq!(concat.source(), rope.source());
+    assert_eq!(
+      concat.source().into_string_lossy(),
+      rope.benchmark_source_with_parent()
+    );
+    assert_eq!(
+      concat.source().into_string_lossy(),
+      rope.benchmark_source_with_stack()
+    );
+    assert_eq!(
+      concat.source().into_string_lossy(),
+      rope.benchmark_source_with_index()
+    );
     assert_eq!(concat.size(), rope.size());
+    let (nodes, height, node_bytes, old_index_bytes) = rope.benchmark_arena_stats();
+    println!(
+      "rope {count}: nodes={nodes}, height={height}, bytes/node={node_bytes}, old-index-bytes={old_index_bytes}"
+    );
     for columns in [false, true] {
       assert_eq!(
         concat.map(&ObjectPool::default(), &MapOptions::new(columns)),
@@ -312,10 +329,31 @@ fn benchmark_rope_source(
       },
     );
     group.bench_with_input(
-      BenchmarkId::new("composition/source/rope", count),
+      BenchmarkId::new("composition/source/rope_contiguous", count),
       &rope,
       |b, source| {
         b.iter(|| std::hint::black_box(source.source()));
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("composition/source/rope_parent", count),
+      &rope,
+      |b, source| {
+        b.iter(|| std::hint::black_box(source.benchmark_source_with_parent()));
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("composition/source/rope_stack", count),
+      &rope,
+      |b, source| {
+        b.iter(|| std::hint::black_box(source.benchmark_source_with_stack()));
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("composition/source/rope_leaf_index", count),
+      &rope,
+      |b, source| {
+        b.iter(|| std::hint::black_box(source.benchmark_source_with_index()));
       },
     );
     group.bench_with_input(
@@ -372,6 +410,27 @@ fn resolve_legacy_placeholders(source: BoxSource) -> String {
   }
   replaced.source().into_string_lossy().into_owned()
 }
+fn typed_event_placeholder_source(count: usize) -> BoxSource {
+  let mut source = ConcatSource::default();
+  for _ in 0..count {
+    source.add(RawStringSource::from_static("x"));
+    source.add(PlaceholderSource::from_static(
+      PlaceholderKey::from_static("benchmark"),
+      BENCHMARK_PLACEHOLDER,
+    ));
+  }
+  source.boxed()
+}
+
+fn resolve_typed_event_placeholders(source: BoxSource) -> String {
+  replace_source_placeholders(source, |key| {
+    (key.as_str() == "benchmark").then(|| "resolved".to_string())
+  })
+  .unwrap()
+  .source()
+  .into_string_lossy()
+  .into_owned()
+}
 
 fn typed_placeholder_template(count: usize) -> (TemplateRopeSource, rspack_sources::PlaceholderId) {
   let mut template = TemplateRopeSource::new();
@@ -400,19 +459,35 @@ fn benchmark_placeholder_resolution(
   group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
 ) {
   for count in [1, 100, 1000] {
-    let expected_source = legacy_placeholder_source(count);
+    let expected = resolve_legacy_placeholders(legacy_placeholder_source(count));
     let (expected_template, expected_id) = typed_placeholder_template(count);
     assert_eq!(
-      resolve_legacy_placeholders(expected_source),
+      expected,
       resolve_typed_placeholders(expected_template, expected_id)
     );
+    assert_eq!(
+      expected,
+      resolve_typed_event_placeholders(typed_event_placeholder_source(count))
+    );
     let source = legacy_placeholder_source(count);
+    let typed_source = typed_event_placeholder_source(count);
     group.bench_with_input(
       BenchmarkId::new("placeholder/legacy_scan", count),
       &source,
       |b, source| {
         b.iter(|| {
           std::hint::black_box(resolve_legacy_placeholders(std::hint::black_box(
+            source.clone(),
+          )))
+        })
+      },
+    );
+    group.bench_with_input(
+      BenchmarkId::new("placeholder/typed_source_events", count),
+      &typed_source,
+      |b, source| {
+        b.iter(|| {
+          std::hint::black_box(resolve_typed_event_placeholders(std::hint::black_box(
             source.clone(),
           )))
         })

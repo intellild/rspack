@@ -165,6 +165,10 @@ impl Source for CachedSource {
     chunks.iter().for_each(|chunk| on_chunk(chunk));
   }
 
+  fn rope_with_placeholders<'a>(&'a self, on_event: &mut dyn FnMut(crate::SourceEvent<'a>)) {
+    self.inner.rope_with_placeholders(on_event);
+  }
+
   fn buffer(&self) -> Cow<'_, [u8]> {
     self.inner.buffer()
   }

@@ -4,15 +4,18 @@ use asset_exports_dependency::AssetExportsDependency;
 use rayon::prelude::*;
 use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  AssetBuildInfo, AssetGeneratorDataUrl, AssetGeneratorDataUrlFnCtx, AssetGeneratorImportMode,
-  AssetInfo, AssetParserDataUrl, BuildMetaDefaultObject, BuildMetaExportsType, ChunkGraph,
-  ChunkUkey, CodeGenerationDataAssetInfo, CodeGenerationDataFilename, CodeGenerationDataUrl,
-  CodeGenerationPublicPathAutoReplace, Compilation, CompilationRenderManifest, CompilerOptions,
-  DependencyType, Filename, GenerateContext, GeneratorOptions, JavascriptParserUrl,
-  ManifestAssetType, Module, ModuleArgument, ModuleGraph, NAMESPACE_OBJECT_EXPORT, NormalModule,
-  ParseContext, ParserAndGenerator, ParserOptions, PathData, Plugin, PublicPath,
-  RenderManifestEntry, ResourceData, RuntimeGlobals, RuntimeSpec, SourceType,
-  rspack_sources::{BoxSource, RawStringSource, SourceExt},
+  AUTO_PUBLIC_PATH_JS_PLACEHOLDER_KEY_PREFIX, AssetBuildInfo, AssetGeneratorDataUrl,
+  AssetGeneratorDataUrlFnCtx, AssetGeneratorImportMode, AssetInfo, AssetParserDataUrl,
+  BuildMetaDefaultObject, BuildMetaExportsType, ChunkGraph, ChunkUkey, CodeGenerationDataAssetInfo,
+  CodeGenerationDataFilename, CodeGenerationDataUrl, CodeGenerationPublicPathAutoReplace,
+  Compilation, CompilationRenderManifest, CompilerOptions, DependencyType, Filename,
+  GenerateContext, GeneratorOptions, JavascriptParserUrl, ManifestAssetType, Module,
+  ModuleArgument, ModuleGraph, NAMESPACE_OBJECT_EXPORT, NormalModule, ParseContext,
+  ParserAndGenerator, ParserOptions, PathData, Plugin, PublicPath, RenderManifestEntry,
+  ResourceData, RuntimeGlobals, RuntimeSpec, SourceType,
+  rspack_sources::{
+    BoxSource, PlaceholderKey, PlaceholderSource, RawStringSource, RopeSource, SourceExt,
+  },
 };
 use rspack_error::{Diagnostic, IntoTWithDiagnosticArray, Result, error};
 use rspack_hash::{RspackHash, RspackHashDigest, RspackHasher};
@@ -540,15 +543,16 @@ impl ParserAndGenerator for AssetParserAndGenerator {
             generate_context
               .data
               .insert(CodeGenerationDataUrl::new(encoded_source.clone()));
-            rspack_util::json_stringify_str(&encoded_source)
+            RawStringSource::from(rspack_util::json_stringify_str(&encoded_source)).boxed()
           } else {
-            format!(
+            RawStringSource::from(format!(
               "{}({})",
               generate_context
                 .runtime_template
                 .render_runtime_globals(&RuntimeGlobals::TO_BINARY),
               rspack_util::json_stringify_str(&encoded_source)
-            )
+            ))
+            .boxed()
           }
         } else if parsed_asset_config.is_inline() {
           let resource_data: &ResourceData = normal_module.resource_resolved_data();
@@ -578,7 +582,7 @@ impl ParserAndGenerator for AssetParserAndGenerator {
             .data
             .insert(CodeGenerationDataUrl::new(encoded_source.clone()));
 
-          rspack_util::json_stringify_str(&encoded_source)
+          RawStringSource::from(rspack_util::json_stringify_str(&encoded_source)).boxed()
         } else if parsed_asset_config.is_resource() {
           let contenthash = self.hash_for_source(source, &compilation.options);
           let contenthash = contenthash.rendered(compilation.options.output.hash_digest_length);
@@ -599,9 +603,15 @@ impl ParserAndGenerator for AssetParserAndGenerator {
             generate_context
               .data
               .insert(CodeGenerationPublicPathAutoReplace(true));
-            rspack_util::json_stringify_str(&format!(
-              "{AUTO_PUBLIC_PATH_PLACEHOLDER}{original_filename}"
-            ))
+            PlaceholderSource::new(
+              PlaceholderKey::new(format!(
+                "{AUTO_PUBLIC_PATH_JS_PLACEHOLDER_KEY_PREFIX}{original_filename}"
+              )),
+              rspack_util::json_stringify_str(&format!(
+                "{AUTO_PUBLIC_PATH_PLACEHOLDER}{original_filename}"
+              )),
+            )
+            .boxed()
           } else if let Some(public_path) =
             module_generator_options.and_then(|x| x.asset_public_path())
           {
@@ -621,38 +631,41 @@ impl ParserAndGenerator for AssetParserAndGenerator {
               }
               PublicPath::Auto => public_path.render(compilation, &filename).await,
             };
-            rspack_util::json_stringify_str(&format!("{public_path}{original_filename}"))
+            RawStringSource::from(rspack_util::json_stringify_str(&format!(
+              "{public_path}{original_filename}"
+            )))
+            .boxed()
           } else {
-            format!(
+            RawStringSource::from(format!(
               r#"{} + "{}""#,
               generate_context
                 .runtime_template
                 .render_runtime_globals(&RuntimeGlobals::PUBLIC_PATH),
               original_filename
-            )
+            ))
+            .boxed()
           };
 
           asset_info.set_source_filename(source_file_name);
 
-          generate_context
-            .data
-            .insert(CodeGenerationDataFilename::new(
+          let filename_data = match module_generator_options
+            .and_then(|x| x.asset_public_path())
+            .unwrap_or_else(|| &compilation.options.output.public_path)
+          {
+            PublicPath::Filename(public_path) => CodeGenerationDataFilename::new(
               filename,
-              match module_generator_options
-                .and_then(|x| x.asset_public_path())
-                .unwrap_or_else(|| &compilation.options.output.public_path)
-              {
-                PublicPath::Filename(p) => PublicPath::render_filename(compilation, p).await,
-                PublicPath::Auto => AUTO_PUBLIC_PATH_PLACEHOLDER.to_string(),
-              },
-            ));
+              PublicPath::render_filename(compilation, public_path).await,
+            ),
+            PublicPath::Auto => CodeGenerationDataFilename::new_auto(filename),
+          };
+          generate_context.data.insert(filename_data);
           generate_context
             .data
             .insert(CodeGenerationDataAssetInfo::new(asset_info));
 
           asset_path
         } else if parsed_asset_config.is_source() {
-          format!(r"{:?}", source.source().into_string_lossy())
+          RawStringSource::from(format!(r"{:?}", source.source().into_string_lossy())).boxed()
         } else {
           unreachable!()
         };
@@ -667,29 +680,42 @@ impl ParserAndGenerator for AssetParserAndGenerator {
             scope.register_namespace_export(NAMESPACE_OBJECT_EXPORT);
             if is_module {
               return Ok(
-                RawStringSource::from(format!(
-                  r#"import {NAMESPACE_OBJECT_EXPORT} from {exported_content};"#
-                ))
+                RopeSource::from_boxed(vec![
+                  RawStringSource::from(format!(r#"import {NAMESPACE_OBJECT_EXPORT} from "#))
+                    .boxed(),
+                  exported_content,
+                  RawStringSource::from_static(";").boxed(),
+                ])
                 .boxed(),
               );
             } else {
               let supports_const = compilation.options.output.environment.supports_const();
               let declaration_kind = if supports_const { "const" } else { "var" };
               return Ok(
-                RawStringSource::from(format!(
-                  r#"{declaration_kind} {NAMESPACE_OBJECT_EXPORT} = require({exported_content});"#
-                ))
+                RopeSource::from_boxed(vec![
+                  RawStringSource::from(format!(
+                    r#"{declaration_kind} {NAMESPACE_OBJECT_EXPORT} = require("#
+                  ))
+                  .boxed(),
+                  exported_content,
+                  RawStringSource::from_static(");").boxed(),
+                ])
                 .boxed(),
               );
             }
           } else {
             return Ok(
-              RawStringSource::from(format!(
-                r#"{module}.exports = require({exported_content});"#,
-                module = generate_context
-                  .runtime_template
-                  .render_module_argument(ModuleArgument::Module)
-              ))
+              RopeSource::from_boxed(vec![
+                RawStringSource::from(format!(
+                  r#"{module}.exports = require("#,
+                  module = generate_context
+                    .runtime_template
+                    .render_module_argument(ModuleArgument::Module)
+                ))
+                .boxed(),
+                exported_content,
+                RawStringSource::from_static(");").boxed(),
+              ])
               .boxed(),
             );
           }
@@ -700,19 +726,29 @@ impl ParserAndGenerator for AssetParserAndGenerator {
           let supports_const = compilation.options.output.environment.supports_const();
           let declaration_kind = if supports_const { "const" } else { "var" };
           Ok(
-            RawStringSource::from(format!(
-              r#"{declaration_kind} {NAMESPACE_OBJECT_EXPORT} = {exported_content};"#
-            ))
+            RopeSource::from_boxed(vec![
+              RawStringSource::from(format!(
+                r#"{declaration_kind} {NAMESPACE_OBJECT_EXPORT} = "#
+              ))
+              .boxed(),
+              exported_content,
+              RawStringSource::from_static(";").boxed(),
+            ])
             .boxed(),
           )
         } else {
           Ok(
-            RawStringSource::from(format!(
-              r#"{module}.exports = {exported_content};"#,
-              module = generate_context
-                .runtime_template
-                .render_module_argument(ModuleArgument::Module)
-            ))
+            RopeSource::from_boxed(vec![
+              RawStringSource::from(format!(
+                r#"{module}.exports = "#,
+                module = generate_context
+                  .runtime_template
+                  .render_module_argument(ModuleArgument::Module)
+              ))
+              .boxed(),
+              exported_content,
+              RawStringSource::from_static(";").boxed(),
+            ])
             .boxed(),
           )
         }
@@ -737,18 +773,17 @@ impl ParserAndGenerator for AssetParserAndGenerator {
             )
             .await?;
 
-          generate_context
-            .data
-            .insert(CodeGenerationDataFilename::new(
+          let filename_data = match module_generator_options
+            .and_then(|x| x.asset_public_path())
+            .unwrap_or_else(|| &compilation.options.output.public_path)
+          {
+            PublicPath::Filename(public_path) => CodeGenerationDataFilename::new(
               filename,
-              match module_generator_options
-                .and_then(|x| x.asset_public_path())
-                .unwrap_or_else(|| &compilation.options.output.public_path)
-              {
-                PublicPath::Filename(p) => PublicPath::render_filename(compilation, p).await,
-                PublicPath::Auto => AUTO_PUBLIC_PATH_PLACEHOLDER.to_string(),
-              },
-            ));
+              PublicPath::render_filename(compilation, public_path).await,
+            ),
+            PublicPath::Auto => CodeGenerationDataFilename::new_auto(filename),
+          };
+          generate_context.data.insert(filename_data);
 
           asset_info.set_source_filename(source_file_name);
           generate_context

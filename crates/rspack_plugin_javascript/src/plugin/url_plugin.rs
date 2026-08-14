@@ -7,16 +7,18 @@ use rspack_core::{
   ModuleType, NormalModuleFactoryParser, ParserAndGenerator, ParserOptions, PathData, Plugin,
   PublicPath, RuntimeCodeTemplate, RuntimeGlobals, RuntimeSpec, SourceType, URLStaticMode,
   get_js_chunk_filename_template, get_undo_path,
-  rspack_sources::{BoxSource, ReplaceSource, SourceExt},
+  rspack_sources::{
+    BoxSource, PlaceholderKey, collect_placeholder_occurrences, replace_source_placeholders,
+  },
 };
 use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
+use rustc_hash::FxHashMap;
 
 use crate::{
   JavascriptModulesRenderModuleContent, JsPlugin, RenderSource,
   dependency::{
-    URL_STATIC_PLACEHOLDER, URL_STATIC_PLACEHOLDER_RE, WORKER_STATIC_URL_PLACEHOLDER,
-    WORKER_STATIC_URL_PLACEHOLDER_RE, WorkerDependency,
+    URL_STATIC_PLACEHOLDER_KEY_PREFIX, WORKER_STATIC_URL_PLACEHOLDER_KEY_PREFIX, WorkerDependency,
   },
   parser_and_generator::JavaScriptParserAndGenerator,
 };
@@ -67,18 +69,30 @@ pub async fn replace_static_url_placeholders(
   output_path: &str,
   source: BoxSource,
 ) -> Result<BoxSource> {
-  let content = source.source().into_string_lossy().into_owned();
-  let mut replace_source = ReplaceSource::new(source);
+  let occurrences = collect_placeholder_occurrences(source.as_ref())
+    .map_err(|error| rspack_error::error!("{error}"))?;
+  if occurrences.is_empty() {
+    return Ok(source);
+  }
   let module_graph = compilation.get_module_graph();
-  let replacements = URL_STATIC_PLACEHOLDER_RE
-    .find_iter(&content)
-    .map(|cap| (cap.start(), cap.end()));
+  let mut resolved = FxHashMap::<PlaceholderKey, String>::default();
 
-  for (start, end) in replacements {
-    let dep_id = &content[start + URL_STATIC_PLACEHOLDER.len()..end];
+  for occurrence in &occurrences {
+    let key = occurrence.key();
+    if resolved.contains_key(key) {
+      continue;
+    }
+    let Some(dep_id) = key.as_str().strip_prefix(URL_STATIC_PLACEHOLDER_KEY_PREFIX) else {
+      continue;
+    };
     let dep_id: DependencyId = dep_id
       .parse::<u32>()
-      .unwrap_or_else(|_| panic!("should be valid dependency id \"{dep_id}\""))
+      .unwrap_or_else(|_| {
+        panic!(
+          "should be valid dependency id in placeholder \"{}\"",
+          key.as_str()
+        )
+      })
       .into();
     let Some(module) = module_graph.module_identifier_by_dependency_id(&dep_id) else {
       continue;
@@ -87,24 +101,36 @@ pub async fn replace_static_url_placeholders(
     let Some(filename) = codegen_result.data.get::<CodeGenerationDataFilename>() else {
       unreachable!()
     };
-
-    replace_source.replace(
-      start as u32,
-      end as u32,
-      filename.filename().to_string(),
-      None,
+    let relative = get_undo_path(
+      output_path,
+      compilation.options.output.path.to_string(),
+      true,
+    );
+    resolved.insert(
+      key.clone(),
+      rspack_util::json_stringify_str(&concat_string!(relative, filename.filename())),
     );
   }
 
-  let worker_replacements = WORKER_STATIC_URL_PLACEHOLDER_RE
-    .find_iter(&content)
-    .map(|cap| (cap.start(), cap.end()));
-
-  for (start, end) in worker_replacements {
-    let dep_id = &content[start + WORKER_STATIC_URL_PLACEHOLDER.len()..end];
+  for occurrence in &occurrences {
+    let key = occurrence.key();
+    if resolved.contains_key(key) {
+      continue;
+    }
+    let Some(dep_id) = key
+      .as_str()
+      .strip_prefix(WORKER_STATIC_URL_PLACEHOLDER_KEY_PREFIX)
+    else {
+      continue;
+    };
     let dep_id: DependencyId = dep_id
       .parse::<u32>()
-      .unwrap_or_else(|_| panic!("should be valid dependency id \"{dep_id}\""))
+      .unwrap_or_else(|_| {
+        panic!(
+          "should be valid dependency id in placeholder \"{}\"",
+          key.as_str()
+        )
+      })
       .into();
     let worker_dep = module_graph
       .dependency_by_id(&dep_id)
@@ -144,15 +170,14 @@ pub async fn replace_static_url_placeholders(
       String::new()
     };
 
-    replace_source.replace(
-      start as u32,
-      end as u32,
-      concat_string!(undo_path, public_path, filename),
-      None,
+    resolved.insert(
+      key.clone(),
+      rspack_util::json_stringify_str(&concat_string!(undo_path, public_path, filename)),
     );
   }
 
-  Ok(replace_source.boxed())
+  replace_source_placeholders(source, |key| resolved.get(key).cloned())
+    .map_err(|error| rspack_error::error!("{error}"))
 }
 
 #[plugin_hook(CompilerCompilation for URLPlugin)]

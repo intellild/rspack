@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use rspack_core::{
   Chunk, ChunkUkey, Compilation, ImportSpec, RuntimeCodeTemplate, RuntimeGlobals,
   RuntimeGlobalsRenderMode, RuntimeVariable, render_imports,
-  rspack_sources::{ConcatSource, RawStringSource},
+  rspack_sources::{BoxSource, ConcatSource, RawStringSource, SourceExt},
 };
 use rspack_plugin_javascript::JsPlugin;
 use rspack_util::{atom::Atom, fx_hash::FxIndexSet};
@@ -16,7 +16,10 @@ use self::{
   rspack_context::RspackContextRuntimeRenderer, rspack_export::RspackExportRuntimeRenderer,
   webpack::WebpackRuntimeRenderer,
 };
-use crate::chunk_link::{ChunkLinkContext, RawImportSource};
+use crate::{
+  chunk_link::{ChunkLinkContext, RawImportSource},
+  placeholder::esm_chunk_placeholder,
+};
 
 static WEBPACK_RENDERER: WebpackRuntimeRenderer = WebpackRuntimeRenderer;
 static RSPACK_CONTEXT_RENDERER: RspackContextRuntimeRenderer = RspackContextRuntimeRenderer;
@@ -115,6 +118,95 @@ fn normalize_raw_import_source(source: &str) -> Cow<'_, str> {
   }
 }
 
+fn render_imports_with_source(
+  request: BoxSource,
+  attr: Option<&str>,
+  import_spec: &ImportSpec,
+) -> ConcatSource {
+  fn add_request(
+    output: &mut ConcatSource,
+    prefix: String,
+    request: BoxSource,
+    attr: Option<&str>,
+  ) {
+    output.add(RawStringSource::from(format!("{prefix}\"")));
+    output.add(request);
+    output.add(RawStringSource::from(format!(
+      "\"{};\n",
+      attr.unwrap_or_default()
+    )));
+  }
+
+  let atoms = &import_spec.atoms;
+  let default_import = import_spec.default_import.as_ref();
+  let ns_import = import_spec.ns_import.as_ref();
+  let mut output = ConcatSource::default();
+  let mut render_default = false;
+  let mut render_ns = false;
+
+  if let Some(ns_import) = ns_import {
+    render_ns = true;
+    add_request(
+      &mut output,
+      format!(
+        "import {}* as {ns_import} from ",
+        default_import
+          .map(|default_import| {
+            render_default = true;
+            format!("{default_import}, ")
+          })
+          .unwrap_or_default()
+      ),
+      request.clone(),
+      attr,
+    );
+  }
+
+  if atoms.is_empty() {
+    if !render_ns {
+      add_request(
+        &mut output,
+        format!(
+          "import {}",
+          default_import
+            .map(|default_atom| format!("{default_atom} from "))
+            .unwrap_or_default()
+        ),
+        request,
+        attr,
+      );
+    }
+  } else {
+    let imports = atoms
+      .iter()
+      .map(|(atom, internal)| {
+        if atom == internal {
+          atom.to_string()
+        } else {
+          format!("{atom} as {internal}")
+        }
+      })
+      .collect::<Vec<_>>()
+      .join(", ");
+    add_request(
+      &mut output,
+      format!(
+        "import {}{{ {imports} }} from ",
+        if render_default {
+          String::new()
+        } else {
+          default_import
+            .map(|atom| format!("{atom}, "))
+            .unwrap_or_default()
+        }
+      ),
+      request,
+      attr,
+    );
+  }
+  output
+}
+
 fn import_spec_imports_any(import_spec: &ImportSpec, idents: &FxIndexSet<String>) -> bool {
   let is_runtime_import = |local: &Atom| {
     idents
@@ -157,14 +249,15 @@ fn render_runtime_chunk_import(
 
   let runtime_chunk = get_chunk(compilation, *runtime_chunk_ukey);
   source.add(RawStringSource::from(format!(
-    "import {{ {} }} from \"__RSPACK_ESM_CHUNK_{}\";\n",
+    "import {{ {} }} from \"",
     runtime_import_idents
       .iter()
       .map(String::as_str)
       .collect::<Vec<_>>()
-      .join(", "),
-    runtime_chunk.expect_id().as_str()
+      .join(", ")
   )));
+  source.add(esm_chunk_placeholder(runtime_chunk.expect_id().as_str()));
+  source.add(RawStringSource::from_static("\";\n"));
   source
 }
 
@@ -212,14 +305,12 @@ fn render_raw_import_stmts(
   for (raw_import_source, import_spec) in &chunk_link.raw_import_stmts {
     let should_skip = match raw_import_source {
       RawImportSource::Chunk(import_chunk) => {
-        runtime_chunk_ukey == Some(import_chunk)
-          && legacy_context_idents
-            .is_some_and(|idents| import_spec_imports_any(import_spec, idents))
-      }
-      RawImportSource::Source((request, _)) if request.contains("__RSPACK_ESM_CHUNK_") => {
         import_spec_imports_any(import_spec, runtime_import_match_idents)
           || legacy_context_idents
             .is_some_and(|idents| import_spec_imports_any(import_spec, idents))
+          || runtime_chunk_ukey == Some(import_chunk)
+            && legacy_context_idents
+              .is_some_and(|idents| import_spec_imports_any(import_spec, idents))
       }
       _ => false,
     };
@@ -227,25 +318,23 @@ fn render_raw_import_stmts(
       continue;
     }
 
-    let (request, attr) = match raw_import_source {
+    match raw_import_source {
       RawImportSource::Chunk(import_chunk) => {
         let chunk = get_chunk(compilation, *import_chunk);
-        (
-          Cow::Owned(format!("__RSPACK_ESM_CHUNK_{}", chunk.expect_id().as_str())),
+        source.add(render_imports_with_source(
+          esm_chunk_placeholder(chunk.expect_id().as_str()).boxed(),
           None,
-        )
+          import_spec,
+        ));
       }
-      RawImportSource::Source((request, attr)) => (
-        normalize_raw_import_source(request.as_str()),
-        attr.as_deref(),
-      ),
-    };
-
-    source.add(RawStringSource::from(render_imports(
-      &request,
-      attr,
-      import_spec,
-    )));
+      RawImportSource::Source((request, attr)) => {
+        source.add(RawStringSource::from(render_imports(
+          &normalize_raw_import_source(request.as_str()),
+          attr.as_deref(),
+          import_spec,
+        )));
+      }
+    }
   }
   source
 }

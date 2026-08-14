@@ -196,6 +196,12 @@ impl Source for ConcatSource {
     });
   }
 
+  fn rope_with_placeholders<'a>(&'a self, on_event: &mut dyn FnMut(crate::SourceEvent<'a>)) {
+    for child in self.optimized_children() {
+      child.rope_with_placeholders(on_event);
+    }
+  }
+
   fn buffer(&self) -> Cow<'_, [u8]> {
     let children = self.optimized_children();
     if children.len() == 1 {

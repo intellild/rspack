@@ -1,10 +1,12 @@
-use cow_utils::CowUtils;
 use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  AsContextDependency, CodeGenerationDataFilename, CodeGenerationDataUrl, Compilation, Dependency,
-  DependencyCategory, DependencyCodeGeneration, DependencyId, DependencyRange, DependencyTemplate,
-  DependencyTemplateType, DependencyType, FactorizeInfo, ModuleDependency, ModuleIdentifier,
-  TemplateContext, TemplateReplaceSource,
+  AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX, AsContextDependency, CodeGenerationDataFilename,
+  CodeGenerationDataUrl, Compilation, Dependency, DependencyCategory, DependencyCodeGeneration,
+  DependencyId, DependencyRange, DependencyTemplate, DependencyTemplateType, DependencyType,
+  FactorizeInfo, ModuleDependency, ModuleIdentifier, TemplateContext, TemplateReplaceSource,
+  rspack_sources::{
+    BoxSource, PlaceholderKey, PlaceholderSource, RawStringSource, RopeSource, SourceExt,
+  },
 };
 
 use crate::utils::{AUTO_PUBLIC_PATH_PLACEHOLDER, css_escape_string};
@@ -34,19 +36,33 @@ impl CssUrlDependency {
     &self,
     identifier: &ModuleIdentifier,
     compilation: &Compilation,
-  ) -> Option<String> {
+  ) -> Option<BoxSource> {
     // url points to asset modules, and asset modules should have same codegen results for all runtimes
     let code_gen_result = compilation.code_generation_results.get_one(identifier);
 
     if let Some(url) = code_gen_result.data.get::<CodeGenerationDataUrl>() {
-      Some(url.inner().to_string())
+      Some(RawStringSource::from(css_escape_string(url.inner())).boxed())
     } else if let Some(data) = code_gen_result.data.get::<CodeGenerationDataFilename>() {
       let filename = data.filename();
-      let public_path = data.public_path().cow_replace(
-        "__RSPACK_PLUGIN_ASSET_AUTO_PUBLIC_PATH__",
-        AUTO_PUBLIC_PATH_PLACEHOLDER,
-      );
-      Some(format!("{public_path}{filename}"))
+      if data.public_path_is_auto() {
+        Some(
+          PlaceholderSource::new(
+            PlaceholderKey::new(format!(
+              "{AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX}{filename}"
+            )),
+            css_escape_string(&format!("{AUTO_PUBLIC_PATH_PLACEHOLDER}{filename}")),
+          )
+          .boxed(),
+        )
+      } else {
+        Some(
+          RawStringSource::from(css_escape_string(&format!(
+            "{}{filename}",
+            data.public_path()
+          )))
+          .boxed(),
+        )
+      }
     } else {
       None
     }
@@ -132,13 +148,17 @@ impl DependencyTemplate for CssUrlDependencyTemplate {
       .module_graph_module_by_dependency_id(dep.id())
       && let Some(target_url) = dep.get_target_url(&mgm.module_identifier, compilation)
     {
-      let target_url = css_escape_string(&target_url);
       let content = if dep.replace_function {
-        format!("url({target_url})")
+        RopeSource::from_boxed(vec![
+          RawStringSource::from_static("url(").boxed(),
+          target_url,
+          RawStringSource::from_static(")").boxed(),
+        ])
+        .boxed()
       } else {
         target_url
       };
-      source.replace(dep.range.start, dep.range.end, content, None);
+      source.replace_source(dep.range.start, dep.range.end, content, None);
     }
   }
 }

@@ -1,9 +1,12 @@
 use rspack_core::{
   Compilation, RuntimeGlobals, RuntimeModule, RuntimeModuleGenerateContext, RuntimeModuleStage,
   RuntimeTemplate, impl_runtime_module,
+  rspack_sources::{BoxSource, ConcatSource, RawStringSource, Source, SourceExt},
 };
 use rspack_plugin_javascript::impl_plugin_for_js_plugin::chunk_has_js;
 use rspack_util::json_stringify_str;
+
+use crate::placeholder::esm_chunk_placeholder;
 
 const ESM_CHUNK_LOADING_RUNTIME_MODULE_VARIABLES: &[&str] = &["esmInstalledChunks", "esmChunkMap"];
 
@@ -113,18 +116,8 @@ impl EsmChunkLoadingRuntimeModule {
   pub(crate) fn new(runtime_template: &RuntimeTemplate) -> Self {
     Self::with_default(runtime_template)
   }
-}
 
-#[async_trait::async_trait]
-impl RuntimeModule for EsmChunkLoadingRuntimeModule {
-  fn runtime_module_variables() -> &'static [&'static str] {
-    ESM_CHUNK_LOADING_RUNTIME_MODULE_VARIABLES
-  }
-
-  async fn generate(
-    &self,
-    context: &RuntimeModuleGenerateContext<'_>,
-  ) -> rspack_error::Result<String> {
+  fn render_source(&self, context: &RuntimeModuleGenerateContext<'_>) -> BoxSource {
     let compilation = context.compilation;
     let chunk_ukey = self.chunk().expect("should have chunk");
     let chunk = compilation
@@ -137,7 +130,7 @@ impl RuntimeModule for EsmChunkLoadingRuntimeModule {
     let async_chunks =
       chunk.get_all_async_chunks(&compilation.build_chunk_graph_artifact.chunk_group_by_ukey);
 
-    let mut chunk_imports = async_chunks
+    let mut chunk_ids = async_chunks
       .iter()
       .filter(|chunk_ukey| !initial_chunks.contains(*chunk_ukey))
       .map(|chunk_ukey| {
@@ -149,20 +142,27 @@ impl RuntimeModule for EsmChunkLoadingRuntimeModule {
       .filter(|chunk| !chunk.runtime().is_disjoint(&runtime))
       .filter(|chunk| chunk.id().is_some())
       .filter(|chunk| chunk_has_js(&chunk.ukey(), compilation))
-      .map(|chunk| {
-        let chunk_id = chunk.expect_id().as_str();
-        format!(
-          "{}: function() {{ return import(\"__RSPACK_ESM_CHUNK_{chunk_id}\"); }}",
-          json_stringify_str(chunk_id)
-        )
-      })
+      .map(|chunk| chunk.expect_id().as_str().to_owned())
       .collect::<Vec<_>>();
-    chunk_imports.sort_unstable();
+    chunk_ids.sort_unstable();
 
-    Ok(format!(
-      r#"var esmInstalledChunks = {{}};
-var esmChunkMap = {{
-{chunk_imports}
+    let mut source = ConcatSource::default();
+    source.add(RawStringSource::from_static(
+      "var esmInstalledChunks = {};\nvar esmChunkMap = {\n",
+    ));
+    for (index, chunk_id) in chunk_ids.iter().enumerate() {
+      if index > 0 {
+        source.add(RawStringSource::from_static(",\n"));
+      }
+      source.add(RawStringSource::from(format!(
+        "{}: function() {{ return import(\"",
+        json_stringify_str(chunk_id)
+      )));
+      source.add(esm_chunk_placeholder(chunk_id));
+      source.add(RawStringSource::from_static("\"); }"));
+    }
+    source.add(RawStringSource::from(format!(
+      r#"
 }};
 {ensure_chunk_handlers}.j = function(chunkId, promises) {{
 	var installedChunkData = esmInstalledChunks[chunkId];
@@ -183,11 +183,38 @@ var esmChunkMap = {{
 	promises.push(promise);
 }};
 "#,
-      chunk_imports = chunk_imports.join(",\n"),
       ensure_chunk_handlers = context
         .runtime_template
         .render_runtime_globals(&RuntimeGlobals::ENSURE_CHUNK_HANDLERS)
-    ))
+    )));
+    source.boxed()
+  }
+}
+
+#[async_trait::async_trait]
+impl RuntimeModule for EsmChunkLoadingRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    ESM_CHUNK_LOADING_RUNTIME_MODULE_VARIABLES
+  }
+
+  async fn generate(
+    &self,
+    context: &RuntimeModuleGenerateContext<'_>,
+  ) -> rspack_error::Result<String> {
+    Ok(
+      self
+        .render_source(context)
+        .source()
+        .into_string_lossy()
+        .into_owned(),
+    )
+  }
+
+  async fn generate_source(
+    &self,
+    context: &RuntimeModuleGenerateContext<'_>,
+  ) -> rspack_error::Result<BoxSource> {
+    Ok(self.render_source(context))
   }
 
   fn stage(&self) -> RuntimeModuleStage {

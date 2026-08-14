@@ -3,6 +3,7 @@ mod dependency;
 mod esm_lib_parser_plugin;
 mod link;
 mod optimize_chunks;
+mod placeholder;
 mod plugin;
 mod preserve_modules;
 mod render;

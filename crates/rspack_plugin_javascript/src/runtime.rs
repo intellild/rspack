@@ -1,12 +1,12 @@
 use rayon::prelude::*;
 use rspack_core::{
-  ChunkGraph, ChunkInitFragments, ChunkKind, ChunkUkey, CodeGenerationPublicPathAutoReplace,
-  Compilation, Module, RuntimeCodeTemplate, RuntimeGlobals, RuntimeGlobalsRenderMode,
-  RuntimeModuleGenerateContext, SourceType,
+  AUTO_PUBLIC_PATH_JS_PLACEHOLDER_KEY_PREFIX, ChunkGraph, ChunkInitFragments, ChunkKind, ChunkUkey,
+  CodeGenerationPublicPathAutoReplace, Compilation, Module, RuntimeCodeTemplate, RuntimeGlobals,
+  RuntimeGlobalsRenderMode, RuntimeModuleGenerateContext, SourceType,
   chunk_graph_chunk::ChunkIdSet,
   get_undo_path, render_runtime_module_source,
   rspack_sources::{
-    BoxSource, ConcatSource, OriginalSource, RawStringSource, ReplaceSource, Source, SourceExt,
+    BoxSource, ConcatSource, RawStringSource, Source, SourceExt, replace_source_placeholders,
   },
   runtime_mode::RuntimeMode,
 };
@@ -143,30 +143,19 @@ pub async fn render_module(
     .get::<CodeGenerationPublicPathAutoReplace>()
     .is_some()
   {
-    let content = origin_source.source().into_string_lossy();
-    let len = AUTO_PUBLIC_PATH_PLACEHOLDER.len();
-    let auto_public_path_matches: Vec<_> = content
-      .match_indices(AUTO_PUBLIC_PATH_PLACEHOLDER)
-      .map(|(index, _)| (index, index + len))
-      .collect();
-    if !auto_public_path_matches.is_empty() {
-      let mut replace = ReplaceSource::new(origin_source.clone());
-      for (start, end) in auto_public_path_matches {
-        let relative = get_undo_path(
-          output_path,
-          compilation.options.output.path.to_string(),
-          true,
-        );
-        replace.replace(start as u32, end as u32, relative, None);
-      }
-      RenderSource {
-        source: replace.boxed(),
-      }
-    } else {
-      RenderSource {
-        source: origin_source.clone(),
-      }
-    }
+    let relative = get_undo_path(
+      output_path,
+      compilation.options.output.path.to_string(),
+      true,
+    );
+    let source = replace_source_placeholders(origin_source.clone(), |key| {
+      key
+        .as_str()
+        .strip_prefix(AUTO_PUBLIC_PATH_JS_PLACEHOLDER_KEY_PREFIX)
+        .map(|filename| rspack_util::json_stringify_str(&format!("{relative}{filename}")))
+    })
+    .map_err(|error| rspack_error::error!("{error}"))?;
+    RenderSource { source }
   } else {
     RenderSource {
       source: origin_source.clone(),
@@ -455,12 +444,7 @@ pub(crate) async fn render_runtime_module_sources(
                   compilation,
                   runtime_template: &runtime_template,
                 };
-                let source_str = module.generate(&context).await?;
-                if module.get_source_map_kind().enabled() {
-                  OriginalSource::new(source_str, module.identifier().as_str()).boxed()
-                } else {
-                  RawStringSource::from(source_str).boxed()
-                }
+                module.generate_source(&context).await?
               }
             };
             let should_isolate = module.should_isolate(runtime_mode);

@@ -46,11 +46,15 @@ pub use raw_source::{RawBufferSource, RawStringSource};
 #[doc(hidden)]
 pub use replace_source::{LegacyReplaceSourceBenchmark, benchmark_legacy_replacement_build};
 pub use replace_source::{ReplaceSource, Replacement, ReplacementEnforce};
-pub use rope::placeholder::{PlaceholderId, PlaceholderKey, TemplateRopeSource};
+pub use rope::placeholder::{
+  PlaceholderId, PlaceholderKey, PlaceholderOccurrence, PlaceholderSource, TemplateRopeSource,
+  collect_placeholder_occurrences, replace_source_placeholders,
+};
 pub use rope_source::RopeSource;
 pub(crate) use source::SourceMapFields;
 pub use source::{
-  BoxSource, MapOptions, Mapping, OriginalLocation, Source, SourceExt, SourceMap, SourceValue,
+  BoxSource, MapOptions, Mapping, OriginalLocation, Source, SourceEvent, SourceExt, SourceMap,
+  SourceValue,
 };
 pub use source_map_source::{SourceMapSource, SourceMapSourceOptions, WithoutOriginalOptions};
 

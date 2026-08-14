@@ -1,10 +1,6 @@
-use std::{
-  path::PathBuf,
-  sync::{Arc, LazyLock},
-};
+use std::{path::PathBuf, sync::Arc};
 
 use atomic_refcell::AtomicRefCell;
-use regex::Regex;
 use rspack_collections::{
   Identifiable, Identifier, IdentifierIndexMap, IdentifierMap, IdentifierSet,
 };
@@ -21,7 +17,9 @@ use rspack_core::{
   NormalModuleFactoryAfterFactorize, NormalModuleFactoryParser, ParserAndGenerator, ParserOptions,
   Plugin, REQUIRE_SCOPE_GLOBALS, RuntimeCodeTemplate, RuntimeGlobals, RuntimeModule,
   SideEffectsOptimizeArtifact, SideEffectsStateArtifact, get_target, is_esm_dep_like,
-  rspack_sources::{ReplaceSource, Source},
+  rspack_sources::{
+    PlaceholderKey, Source, collect_placeholder_occurrences, replace_source_placeholders,
+  },
 };
 use rspack_error::{Diagnostic, Result};
 use rspack_hook::{plugin, plugin_hook};
@@ -49,6 +47,7 @@ use crate::{
     analyze_dyn_import_targets, assign_dyn_import_chunk_short_names, ensure_entry_exports,
     extract_tla_shared_modules, optimize_runtime_chunks,
   },
+  placeholder::chunk_id_from_placeholder,
   preserve_modules::preserve_modules,
   runtime::{
     EsmChunkLoadingRuntimeModule, EsmEnsureChunkRuntimeModule, EsmRegisterModuleRuntimeModule,
@@ -491,9 +490,6 @@ async fn additional_tree_runtime_requirements(
   Ok(())
 }
 
-static RSPACK_ESM_CHUNK_PLACEHOLDER_RE: LazyLock<Regex> =
-  LazyLock::new(|| Regex::new(r##"__RSPACK_ESM_CHUNK_[^'"\\]+"##).expect("should have regex"));
-
 #[plugin_hook(CompilationProcessAssets for EsmLibraryPlugin, stage = Compilation::PROCESS_ASSETS_STAGE_AFTER_OPTIMIZE_HASH)]
 async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
   let mut replaced = vec![];
@@ -518,7 +514,9 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
         continue;
       }
 
-      let mut replace_source = ReplaceSource::new(source.clone());
+      let occurrences = collect_placeholder_occurrences(source.as_ref())
+        .map_err(|error| rspack_error::error!("{error}"))?;
+      let mut resolved = FxHashMap::<PlaceholderKey, String>::default();
       let output_path = compilation.options.output.path.as_std_path();
       let mut self_path = output_path.join(asset_name);
 
@@ -527,13 +525,14 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
 
       let chunk_ids_to_ukey = self.chunk_ids_to_ukey.borrow();
 
-      for captures in RSPACK_ESM_CHUNK_PLACEHOLDER_RE.find_iter(&content) {
-        let chunk_id = captures
-          .as_str()
-          .strip_prefix("__RSPACK_ESM_CHUNK_")
-          .expect("should have correct prefix");
-        let start = captures.range().start as u32;
-        let end = captures.range().end as u32;
+      for occurrence in &occurrences {
+        let key = occurrence.key();
+        let Some(chunk_id) = chunk_id_from_placeholder(key) else {
+          continue;
+        };
+        if resolved.contains_key(key) {
+          continue;
+        }
         let Some(chunk) = chunk_ids_to_ukey.get(chunk_id).map(|chunk_ukey| {
           compilation
             .build_chunk_graph_artifact
@@ -583,19 +582,21 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
         } else {
           std::borrow::Cow::Owned(format!("./{relative}"))
         };
-        replace_source.replace(start, end, import_str.into_owned(), None);
+        resolved.insert(key.clone(), import_str.into_owned());
       }
       drop(chunk_ids_to_ukey);
 
-      replaced.push((asset_name.clone(), replace_source));
+      let source = replace_source_placeholders(source.clone(), |key| resolved.get(key).cloned())
+        .map_err(|error| rspack_error::error!("{error}"))?;
+      replaced.push((asset_name.clone(), source));
     }
   }
-  for (replace_name, replace_source) in replaced {
+  for (replace_name, source) in replaced {
     compilation
       .assets_mut()
       .get_mut(&replace_name)
       .expect("should have asset")
-      .set_source(Some(Arc::new(replace_source)));
+      .set_source(Some(source));
   }
   for remove_name in removed {
     compilation.assets_mut().remove(&remove_name);

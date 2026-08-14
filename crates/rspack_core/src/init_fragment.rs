@@ -27,6 +27,11 @@ pub struct InitFragmentContents {
   pub end: Option<String>,
 }
 
+pub struct InitFragmentSourceContents {
+  pub start: BoxSource,
+  pub end: Option<BoxSource>,
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum InitFragmentKey {
   Unique(u32),
@@ -219,6 +224,20 @@ pub trait InitFragment<C>: IntoAny + RspackHash + DynClone + Debug + Sync + Send
   /// getContent + getEndContent
   fn contents(self: Box<Self>, context: &mut C) -> Result<InitFragmentContents>;
 
+  /// Structured equivalent of [`InitFragment::contents`].
+  ///
+  /// Implementations that carry typed source nodes can override this method;
+  /// string-backed fragments retain the existing behavior through this default.
+  fn source_contents(self: Box<Self>, context: &mut C) -> Result<InitFragmentSourceContents> {
+    let contents = self.contents(context)?;
+    Ok(InitFragmentSourceContents {
+      start: RawStringSource::from(contents.start).boxed(),
+      end: contents
+        .end
+        .map(|source| RawStringSource::from(source).boxed()),
+    })
+  }
+
   fn stage(&self) -> InitFragmentStage;
 
   fn position(&self) -> i32;
@@ -314,10 +333,10 @@ pub fn render_init_fragments<C: InitFragmentRenderContext>(
 
   for (key, fragments) in keyed_fragments {
     let f = key.merge_fragments(fragments);
-    let contents = f.contents(context)?;
-    concat_source.add(RawStringSource::from(contents.start));
+    let contents = f.source_contents(context)?;
+    concat_source.add(contents.start);
     if let Some(end_content) = contents.end {
-      end_contents.push(RawStringSource::from(end_content))
+      end_contents.push(end_content)
     }
   }
 
@@ -421,6 +440,73 @@ impl<C> InitFragment<C> for NormalInitFragment {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct SourceInitFragment {
+  content: BoxSource,
+  stage: InitFragmentStage,
+  position: i32,
+  key: InitFragmentKey,
+  end_content: Option<BoxSource>,
+}
+
+impl SourceInitFragment {
+  pub fn new(
+    content: BoxSource,
+    stage: InitFragmentStage,
+    position: i32,
+    key: InitFragmentKey,
+    end_content: Option<BoxSource>,
+  ) -> Self {
+    Self {
+      content,
+      stage,
+      position,
+      key,
+      end_content,
+    }
+  }
+}
+
+impl RspackHash for SourceInitFragment {
+  fn hash(&self, state: &mut RspackHasher) {
+    RspackHash::hash(&"SourceInitFragment", state);
+    std::hash::Hash::hash(&self.content, state);
+    std::hash::Hash::hash(&self.end_content, state);
+    RspackHash::hash(&self.stage, state);
+    RspackHash::hash(&self.position, state);
+    RspackHash::hash(&self.key, state);
+  }
+}
+
+impl<C> InitFragment<C> for SourceInitFragment {
+  fn contents(self: Box<Self>, _context: &mut C) -> Result<InitFragmentContents> {
+    Ok(InitFragmentContents {
+      start: self.content.source().into_string_lossy().into_owned(),
+      end: self
+        .end_content
+        .map(|source| source.source().into_string_lossy().into_owned()),
+    })
+  }
+
+  fn source_contents(self: Box<Self>, _context: &mut C) -> Result<InitFragmentSourceContents> {
+    Ok(InitFragmentSourceContents {
+      start: self.content,
+      end: self.end_content,
+    })
+  }
+
+  fn stage(&self) -> InitFragmentStage {
+    self.stage
+  }
+
+  fn position(&self) -> i32 {
+    self.position
+  }
+
+  fn key(&self) -> &InitFragmentKey {
+    &self.key
+  }
+}
 #[derive(Debug, Clone)]
 pub enum ESMExportBinding {
   Getter(Atom),

@@ -1,14 +1,12 @@
-use std::sync::LazyLock;
-
-use regex::Regex;
 use rspack_cacheable::{cacheable, cacheable_dyn, with::AsPreset};
 use rspack_core::{
-  AsContextDependency, CodeGenerationPublicPathAutoReplace, ConnectionState, Dependency,
-  DependencyCategory, DependencyCodeGeneration, DependencyCondition, DependencyConditionFn,
-  DependencyId, DependencyRange, DependencyTemplate, DependencyTemplateType, DependencyType,
-  ExportsInfoArtifact, FactorizeInfo, JavascriptParserUrl, ModuleDependency, ModuleGraph,
-  ModuleGraphCacheArtifact, ModuleGraphConnection, RuntimeGlobals, RuntimeSpec,
-  SideEffectsStateArtifact, TemplateContext, TemplateReplaceSource, URLStaticMode, UsedByExports,
+  AsContextDependency, ConnectionState, Dependency, DependencyCategory, DependencyCodeGeneration,
+  DependencyCondition, DependencyConditionFn, DependencyId, DependencyRange, DependencyTemplate,
+  DependencyTemplateType, DependencyType, ExportsInfoArtifact, FactorizeInfo, JavascriptParserUrl,
+  ModuleDependency, ModuleGraph, ModuleGraphCacheArtifact, ModuleGraphConnection, RuntimeGlobals,
+  RuntimeSpec, SideEffectsStateArtifact, TemplateContext, TemplateReplaceSource, URLStaticMode,
+  UsedByExports,
+  rspack_sources::{PlaceholderKey, PlaceholderSource, RawStringSource, RopeSource, SourceExt},
 };
 use swc_atoms::Atom;
 
@@ -118,9 +116,7 @@ impl AsContextDependency for URLDependency {}
 pub struct URLDependencyTemplate;
 
 pub static URL_STATIC_PLACEHOLDER: &str = "RSPACK_AUTO_URL_STATIC_PLACEHOLDER_";
-pub static URL_STATIC_PLACEHOLDER_RE: LazyLock<Regex> = LazyLock::new(|| {
-  Regex::new(&format!(r#"{URL_STATIC_PLACEHOLDER}(?<dep>\d+)"#)).expect("should be valid regex")
-});
+pub const URL_STATIC_PLACEHOLDER_KEY_PREFIX: &str = "rspack:javascript:url-static:";
 
 impl URLDependencyTemplate {
   pub fn template_type() -> DependencyTemplateType {
@@ -161,19 +157,25 @@ impl DependencyTemplate for URLDependencyTemplate {
       }
       Some(JavascriptParserUrl::NewUrlRelative) => {
         code_generatable_context.data.insert(URLStaticMode);
-        code_generatable_context
-          .data
-          .insert(CodeGenerationPublicPathAutoReplace(true));
-        source.replace(
+        let fallback = rspack_util::json_stringify_str(&format!(
+          "{AUTO_PUBLIC_PATH_PLACEHOLDER}{URL_STATIC_PLACEHOLDER}{}",
+          dep.id.as_u32()
+        ));
+        let request = PlaceholderSource::new(
+          PlaceholderKey::new(format!(
+            "{URL_STATIC_PLACEHOLDER_KEY_PREFIX}{}",
+            dep.id.as_u32()
+          )),
+          fallback,
+        );
+        source.replace_source(
           dep.range.start,
           dep.range.end,
-          format!(
-            "new URL({}, import.meta.url)",
-            rspack_util::json_stringify_str(&format!(
-              "{AUTO_PUBLIC_PATH_PLACEHOLDER}{URL_STATIC_PLACEHOLDER}{}",
-              &dep.id.as_u32()
-            )),
-          ),
+          RopeSource::from_boxed(vec![
+            RawStringSource::from_static("new URL(").boxed(),
+            request.boxed(),
+            RawStringSource::from_static(", import.meta.url)").boxed(),
+          ]),
           None,
         );
       }

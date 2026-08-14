@@ -1,7 +1,10 @@
 use rspack_core::{
   ChunkUkey, Compilation, CompilationAdditionalTreeRuntimeRequirements, CrossOriginLoading,
   ManifestAssetType, RuntimeGlobals, RuntimeModule, RuntimeModuleExt, RuntimeModuleGenerateContext,
-  RuntimeTemplate, SourceType, chunk_graph_chunk::ChunkId, impl_runtime_module,
+  RuntimeTemplate, SourceType,
+  chunk_graph_chunk::ChunkId,
+  impl_runtime_module,
+  rspack_sources::{BoxSource, ConcatSource, RawStringSource, Source, SourceExt},
 };
 use rspack_error::{Result, error};
 use rspack_hook::plugin_hook;
@@ -13,7 +16,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 use crate::{
   SubresourceIntegrityHashFunction, SubresourceIntegrityPlugin, SubresourceIntegrityPluginInner,
-  util::{find_chunks, get_hash_variable, make_placeholder},
+  util::{find_chunks, get_hash_variable, make_placeholder_source},
 };
 
 fn add_attribute(
@@ -42,15 +45,7 @@ impl SRIHashVariableRuntimeModule {
   ) -> Self {
     Self::with_default(runtime_template, hash_funcs)
   }
-}
-
-#[async_trait::async_trait]
-impl RuntimeModule for SRIHashVariableRuntimeModule {
-  fn runtime_module_variables() -> &'static [&'static str] {
-    &[]
-  }
-
-  async fn generate(&self, context: &RuntimeModuleGenerateContext<'_>) -> Result<String> {
+  async fn render_source(&self, context: &RuntimeModuleGenerateContext<'_>) -> Result<BoxSource> {
     let compilation = context.compilation;
     let Some(chunk) = self
       .chunk()
@@ -116,7 +111,7 @@ impl RuntimeModule for SRIHashVariableRuntimeModule {
       })
       .collect::<Vec<_>>();
 
-    let mut code = vec![];
+    let mut code = ConcatSource::default();
 
     for (source_type, variable_ref) in source_types {
       let chunk_with_source_type = all_chunks
@@ -138,30 +133,29 @@ impl RuntimeModule for SRIHashVariableRuntimeModule {
         .collect::<Vec<_>>();
 
       if !chunk_with_source_type.is_empty() {
-        code.push(format!(
-          r#"
-          {} = {};
-          "#,
-          variable_ref,
-          generate_sri_hash_placeholders(
-            match source_type {
-              SourceType::JavaScript => ManifestAssetType::JavaScript,
-              SourceType::Css => ManifestAssetType::Css,
-              SourceType::Custom(name) if name == "css/mini-extract" =>
-                ManifestAssetType::Custom("extract-css".into()),
-              _ => ManifestAssetType::Unknown,
-            },
-            chunk_with_source_type,
-            &self.hash_funcs,
-            compilation
-          ),
+        let asset_type = match source_type {
+          SourceType::JavaScript => ManifestAssetType::JavaScript,
+          SourceType::Css => ManifestAssetType::Css,
+          SourceType::Custom(name) if name == "css/mini-extract" => {
+            ManifestAssetType::Custom("extract-css".into())
+          }
+          _ => ManifestAssetType::Unknown,
+        };
+        code.add(RawStringSource::from(format!(
+          "\n          {variable_ref} = "
+        )));
+        code.add(generate_sri_hash_placeholders(
+          asset_type,
+          chunk_with_source_type,
+          &self.hash_funcs,
         ));
+        code.add(RawStringSource::from_static(";\n          "));
       }
     }
 
-    Ok(code.join("\n"))
+    Ok(code.boxed())
   }
-  fn runtime_requirements(
+  fn get_runtime_requirements(
     &self,
     _compilation: &Compilation,
   ) -> rspack_core::RuntimeModuleRuntimeRequirements {
@@ -172,25 +166,57 @@ impl RuntimeModule for SRIHashVariableRuntimeModule {
   }
 }
 
+#[async_trait::async_trait]
+impl RuntimeModule for SRIHashVariableRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    &[]
+  }
+
+  async fn generate(&self, context: &RuntimeModuleGenerateContext<'_>) -> Result<String> {
+    Ok(
+      self
+        .render_source(context)
+        .await?
+        .source()
+        .into_string_lossy()
+        .into_owned(),
+    )
+  }
+
+  async fn generate_source(&self, context: &RuntimeModuleGenerateContext<'_>) -> Result<BoxSource> {
+    self.render_source(context).await
+  }
+
+  fn runtime_requirements(
+    &self,
+    compilation: &Compilation,
+  ) -> rspack_core::RuntimeModuleRuntimeRequirements {
+    self.get_runtime_requirements(compilation)
+  }
+}
 fn generate_sri_hash_placeholders(
   asset_type: ManifestAssetType,
   chunks: Vec<&ChunkId>,
   hash_funcs: &Vec<SubresourceIntegrityHashFunction>,
-  _compilation: &Compilation,
-) -> String {
-  format!(
-    "{{{}}}",
-    chunks
-      .into_iter()
-      .map(|c| {
-        let chunk_id = rspack_util::json_stringify(c);
-        let placeholder =
-          rspack_util::json_stringify_str(&make_placeholder(asset_type, hash_funcs, c.as_str()));
-        format!("{chunk_id}: {placeholder}")
-      })
-      .collect::<Vec<_>>()
-      .join(",")
-  )
+) -> BoxSource {
+  let mut source = ConcatSource::default();
+  source.add(RawStringSource::from_static("{"));
+  for (index, chunk) in chunks.into_iter().enumerate() {
+    if index > 0 {
+      source.add(RawStringSource::from_static(","));
+    }
+    source.add(RawStringSource::from(format!(
+      "{}: ",
+      rspack_util::json_stringify(chunk)
+    )));
+    source.add(make_placeholder_source(
+      asset_type,
+      hash_funcs,
+      chunk.as_str(),
+    ));
+  }
+  source.add(RawStringSource::from_static("}"));
+  source.boxed()
 }
 
 #[plugin_hook(RuntimePluginCreateScript for SubresourceIntegrityPlugin)]

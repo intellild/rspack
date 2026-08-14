@@ -10,7 +10,7 @@ use serde::{Serialize, Serializer};
 use simd_json::{BorrowedValue, ErrorType, prelude::*};
 
 use crate::{
-  Result,
+  PlaceholderKey, Result,
   helpers::{Chunks, StreamChunks, decode_mappings_fields},
   object_pool::ObjectPool,
 };
@@ -106,6 +106,15 @@ impl<'a> SourceValue<'a> {
   }
 }
 
+/// One ordered event in a source containing structured placeholders.
+#[derive(Debug, Clone, Copy)]
+pub enum SourceEvent<'a> {
+  /// Ordinary source bytes.
+  Text(&'a str),
+  /// A typed placeholder and the bytes used for compatibility output.
+  Placeholder(&'a PlaceholderKey, &'a str),
+}
+
 /// [Source] abstraction, [webpack-sources docs](https://github.com/webpack/webpack-sources/#source).
 pub trait Source: StreamChunks + DynHash + AsAny + DynEq + fmt::Debug + Sync + Send {
   /// Get the source code.
@@ -113,6 +122,15 @@ pub trait Source: StreamChunks + DynHash + AsAny + DynEq + fmt::Debug + Sync + S
 
   /// Return a lightweight "rope" view of the source as borrowed string slices.
   fn rope<'a>(&'a self, on_chunk: &mut dyn FnMut(&'a str));
+
+  /// Stream ordinary chunks and typed placeholder occurrences without scanning text.
+  ///
+  /// Sources that do not contain structured placeholders inherit the ordinary
+  /// [`Source::rope`] behavior. Composition sources override this method to
+  /// preserve placeholder identity across wrappers.
+  fn rope_with_placeholders<'a>(&'a self, on_event: &mut dyn FnMut(SourceEvent<'a>)) {
+    self.rope(&mut |chunk| on_event(SourceEvent::Text(chunk)));
+  }
 
   /// Get the source buffer.
   fn buffer(&self) -> Cow<'_, [u8]>;
@@ -148,6 +166,11 @@ impl Source for BoxSource {
   #[inline]
   fn rope<'a>(&'a self, on_chunk: &mut dyn FnMut(&'a str)) {
     self.as_ref().rope(on_chunk)
+  }
+
+  #[inline]
+  fn rope_with_placeholders<'a>(&'a self, on_event: &mut dyn FnMut(SourceEvent<'a>)) {
+    self.as_ref().rope_with_placeholders(on_event)
   }
 
   #[inline]

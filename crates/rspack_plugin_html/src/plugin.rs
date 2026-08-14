@@ -171,12 +171,11 @@ async fn generate_html(
     current_ast.visit_mut_with(&mut visitor);
   }
 
-  let raw_html = parser.codegen(&mut current_ast, compilation)?;
-  let html = raw_html.cow_replace("$$RSPACK_URL_AMP$$", "&");
+  let html = parser.codegen(&mut current_ast, compilation)?;
 
   Ok((
     template_file_name.to_string(),
-    html.into_owned(),
+    html,
     template.file_dependencies,
   ))
 }

@@ -1,11 +1,10 @@
 use std::{
-  sync::{Arc, LazyLock, OnceLock},
+  sync::{Arc, OnceLock},
   time::{Duration, Instant},
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
 use cow_utils::CowUtils;
-use regex::Regex;
 use rspack_collections::{IdentifierMap, IdentifierSet};
 use rspack_core::{
   BoxPlugin, ChunkUkey, Compilation, CompilationOptimizeDependencies, CompilationParams,
@@ -17,7 +16,7 @@ use rspack_core::{
   build_module_graph::BuildModuleGraphArtifact,
   module_declared_side_effect_free,
   resolver::ResolveInnerError,
-  rspack_sources::{BoxSource, ReplaceSource, SourceExt},
+  rspack_sources::{BoxSource, ReplaceSource, SourceExt, collect_placeholder_occurrences},
   runtime_variable_name,
 };
 use rspack_error::{Diagnostic, Result};
@@ -27,18 +26,15 @@ use rspack_plugin_javascript::{
 };
 use rustc_hash::FxHashMap as HashMap;
 
-static RSTEST_FLAG_RE: LazyLock<Regex> = LazyLock::new(|| {
-  Regex::new(r"\/\* RSTEST:(MOCK|UNMOCK|MOCKREQUIRE|HOISTED):([^:]+):(.*?):(HOIST_START|HOIST_END|PLACEHOLDER) \*\/")
-    .expect("should initialize rstest flag regex")
-});
-
 use crate::{
   dynamic_import_origin_dependency::RstestDynamicImportOriginDependencyTemplate,
   esm_import_dependency::{
     RstestESMImportSideEffectDependencyTemplate, RstestESMImportSpecifierDependencyTemplate,
   },
   import_dependency::ImportDependencyTemplate,
-  mock_method_dependency::MockMethodDependencyTemplate,
+  mock_method_dependency::{
+    MockMethodDependencyTemplate, RstestHoistPlaceholderKind, parse_hoist_placeholder,
+  },
   mock_module_id_dependency::{MockModuleIdDependency, MockModuleIdDependencyTemplate},
   module_path_name_dependency::ModulePathNameDependencyTemplate,
   parser_plugin::{MOCK_TARGET_REQUEST_PREFIX, RstestParserPlugin},
@@ -371,8 +367,8 @@ impl RstestPlugin {
   }
 
   fn update_source(&self, old: BoxSource, replace_map: &HashMap<String, MockFlagPos>) -> BoxSource {
-    let old_source = old.clone();
-    let mut replace = ReplaceSource::new(old_source);
+    let content = old.source().into_string_lossy().into_owned();
+    let mut replace = ReplaceSource::new(old);
 
     for pos in replace_map.values() {
       if let (Some(placeholder_start), Some(placeholder_end)) =
@@ -389,19 +385,14 @@ impl RstestPlugin {
           pos.content_with_flag_end,
         )
       {
-        let content = &old.source().into_string_lossy()[content_start..content_end];
+        let hoisted = &content[content_start as usize..content_end as usize];
         replace.replace(
-          placeholder_start as u32,
-          placeholder_end as u32 + 1, // consider the trailing semicolon
-          format! {"// [Rstest mock hoist] \"{}\"\n{content};\n\n", pos.request},
+          placeholder_start,
+          placeholder_end,
+          format! {"// [Rstest mock hoist] \"{}\"\n{hoisted};\n\n", pos.request},
           None,
         );
-        replace.replace_static(
-          content_with_flag_start as u32,
-          content_with_flag_end as u32,
-          "",
-          None,
-        );
+        replace.replace_static(content_with_flag_start, content_with_flag_end, "", None);
       }
     }
 
@@ -540,12 +531,12 @@ async fn compilation_stage_9999(
 #[derive(Debug, Default)]
 struct MockFlagPos {
   request: String,
-  content_start: Option<usize>,
-  content_with_flag_start: Option<usize>,
-  content_end: Option<usize>,
-  content_with_flag_end: Option<usize>,
-  placeholder_start: Option<usize>,
-  placeholder_end: Option<usize>,
+  content_start: Option<u32>,
+  content_with_flag_start: Option<u32>,
+  content_end: Option<u32>,
+  content_with_flag_end: Option<u32>,
+  placeholder_start: Option<u32>,
+  placeholder_end: Option<u32>,
 }
 
 #[plugin_hook(CompilationProcessAssets for RstestPlugin, stage = Compilation::PROCESS_ASSETS_STAGE_ADDITIONAL)]
@@ -564,45 +555,43 @@ async fn mock_hoist_process_assets(&self, compilation: &mut Compilation) -> Resu
 
   for file in files {
     let mut pos_map: HashMap<String, MockFlagPos> = HashMap::default();
-    let _res = compilation.update_asset(file.as_str(), |old, info| {
+    compilation.update_asset(file.as_str(), |old, info| {
       // Only handles JavaScript.
       if info.javascript_module.is_none() {
         return Ok((old, info));
       }
 
-      let content = old.source().into_string_lossy();
-      let captures: Vec<_> = RSTEST_FLAG_RE.captures_iter(&content).collect();
+      let occurrences = collect_placeholder_occurrences(old.as_ref()).map_err(|error| {
+        rspack_error::error!("Failed to inspect Rstest placeholders in asset {file}: {error}")
+      })?;
 
-      for c in captures {
-        let [Some(full), Some(hoist_id), Some(request), Some(t)] =
-          [c.get(0), c.get(2), c.get(3), c.get(4)]
-        else {
+      for occurrence in occurrences {
+        let Some(marker) = parse_hoist_placeholder(occurrence.key()) else {
           continue;
         };
 
-        let entry = pos_map.entry(hoist_id.as_str().to_string()).or_default();
-        entry.request = request.as_str().to_string();
+        let entry = pos_map.entry(marker.hoist_id.to_string()).or_default();
+        entry.request = marker.request.to_string();
 
-        if t.as_str() == "HOIST_START" {
-          entry.content_with_flag_start = Some(full.start());
-          entry.content_start = Some(full.end());
-        } else if t.as_str() == "HOIST_END" {
-          entry.content_with_flag_end = Some(full.end());
-          entry.content_end = Some(full.start());
-        } else if t.as_str() == "PLACEHOLDER" {
-          entry.placeholder_start = Some(full.start());
-          entry.placeholder_end = Some(full.end());
-        } else {
-          panic!(
-            "Unknown rstest mock type: {}",
-            c.get(1).map_or("", |m| m.as_str())
-          );
+        match marker.kind {
+          RstestHoistPlaceholderKind::Start => {
+            entry.content_with_flag_start = Some(occurrence.start());
+            entry.content_start = Some(occurrence.end());
+          }
+          RstestHoistPlaceholderKind::End => {
+            entry.content_with_flag_end = Some(occurrence.end());
+            entry.content_end = Some(occurrence.start());
+          }
+          RstestHoistPlaceholderKind::Target => {
+            entry.placeholder_start = Some(occurrence.start());
+            entry.placeholder_end = Some(occurrence.end());
+          }
         }
       }
 
       let new = self.update_source(old, &pos_map);
       Ok((new, info))
-    });
+    })?;
   }
 
   Ok(())

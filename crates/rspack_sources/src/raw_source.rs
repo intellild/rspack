@@ -45,6 +45,11 @@ impl RawStringSource {
   pub fn from_static(s: &'static str) -> Self {
     Self(Cow::Borrowed(s))
   }
+
+  #[inline]
+  pub(crate) fn value(&self) -> &str {
+    &self.0
+  }
 }
 
 impl From<String> for RawStringSource {

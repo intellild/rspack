@@ -1,4 +1,4 @@
-use std::{borrow::Cow, sync::Arc};
+use std::sync::Arc;
 
 use atomic_refcell::AtomicRefCell;
 use rspack_collections::IdentifierMap;
@@ -6,12 +6,34 @@ use rspack_core::{
   Dependency, DependencyId, DependencyTemplate, ExportsType, ExternalModule,
   FakeNamespaceObjectMode, ModuleGraph, ModuleReferenceOptions, RuntimeGlobals, TemplateContext,
   get_exports_type, property_access,
+  rspack_sources::{BoxSource, RawStringSource, RopeSource, SourceExt},
 };
 use rspack_plugin_javascript::dependency::ImportDependency;
 use rspack_plugin_rslib::dyn_import_external::render_dyn_import_external_module;
 use rspack_util::atom::Atom;
 
-use crate::EsmLibraryPlugin;
+use crate::{EsmLibraryPlugin, placeholder::esm_chunk_placeholder};
+
+fn text_source(content: String) -> BoxSource {
+  RawStringSource::from(content).boxed()
+}
+
+fn append_source(source: BoxSource, suffix: String) -> BoxSource {
+  if suffix.is_empty() {
+    source
+  } else {
+    RopeSource::from_boxed(vec![source, RawStringSource::from(suffix).boxed()]).boxed()
+  }
+}
+
+fn chunk_import_source(chunk_id: &str) -> BoxSource {
+  RopeSource::from_boxed(vec![
+    RawStringSource::from_static("import(\"").boxed(),
+    esm_chunk_placeholder(chunk_id).boxed(),
+    RawStringSource::from_static("\")").boxed(),
+  ])
+  .boxed()
+}
 
 fn then_expr(
   code_generatable_context: &mut TemplateContext,
@@ -216,7 +238,7 @@ impl DynamicImportDependencyTemplate {
     import_dep: &ImportDependency,
     source: &mut rspack_core::TemplateReplaceSource,
     code_generatable_context: &mut rspack_core::TemplateContext,
-  ) -> Option<String> {
+  ) -> Option<BoxSource> {
     let dep = import_dep as &dyn Dependency;
     let dep_id = dep.id();
     let module_graph = code_generatable_context.compilation.get_module_graph();
@@ -226,11 +248,11 @@ impl DynamicImportDependencyTemplate {
       .request();
 
     let Some(ref_module) = module_graph.get_module_by_dependency_id(dep_id) else {
-      return Some(
+      return Some(text_source(
         code_generatable_context
           .runtime_template
           .missing_module_promise(request),
-      );
+      ));
     };
 
     if let Some(external_module) = ref_module.as_external_module()
@@ -247,7 +269,7 @@ impl DynamicImportDependencyTemplate {
       if let Some(external_import) =
         render_lazy_commonjs_external_import(code_generatable_context, external_module, fake_type)
       {
-        return Some(external_import);
+        return Some(text_source(external_import));
       }
     }
 
@@ -258,11 +280,11 @@ impl DynamicImportDependencyTemplate {
       Ok(c) => c,
       Err(e) => {
         tracing::warn!(error = %e, "failed to resolve module chunk for dynamic import target");
-        return Some(
+        return Some(text_source(
           code_generatable_context
             .runtime_template
             .missing_module_promise(request),
-        );
+        ));
       }
     };
 
@@ -275,11 +297,11 @@ impl DynamicImportDependencyTemplate {
       Ok(c) => c,
       Err(e) => {
         tracing::warn!(error = %e, "failed to resolve module chunk for dynamic import source");
-        return Some(
+        return Some(text_source(
           code_generatable_context
             .runtime_template
             .missing_module_promise(request),
-        );
+        ));
       }
     };
 
@@ -309,20 +331,17 @@ impl DynamicImportDependencyTemplate {
       .chunk_by_ukey
       .expect_get(&ref_chunk_ukey);
     let import_promise = if already_in_chunk {
-      Cow::Borrowed("Promise.resolve()")
+      RawStringSource::from_static("Promise.resolve()").boxed()
     } else {
-      Cow::Owned(format!(
-        "import(\"__RSPACK_ESM_CHUNK_{}\")",
-        ref_chunk.expect_id().as_str()
-      ))
+      chunk_import_source(ref_chunk.expect_id().as_str())
     };
 
     let Some(concatenation_scope) = &mut code_generatable_context.concatenation_scope else {
       // if we are not in a concatenation scope, then all its children are not scope hoisted as well
       // we can safely use __rspack_require to fetch module
-      return Some(format!(
-        "{import_promise}{}",
-        then_expr(code_generatable_context, dep_id, request)
+      return Some(append_source(
+        import_promise,
+        then_expr(code_generatable_context, dep_id, request),
       ));
     };
 
@@ -332,9 +351,9 @@ impl DynamicImportDependencyTemplate {
     if !is_ref_module_concatenated {
       // if target is not in a concatenation scope, then all its children are not scope hoisted as well
       // we can safely use __rspack_require to fetch module
-      return Some(format!(
-        "{import_promise}{}",
-        then_expr(code_generatable_context, dep_id, request)
+      return Some(append_source(
+        import_promise,
+        then_expr(code_generatable_context, dep_id, request),
       ));
     }
 
@@ -353,7 +372,7 @@ impl DynamicImportDependencyTemplate {
           ..Default::default()
         },
       );
-      return Some(format!("Promise.resolve({ns_ref})"));
+      return Some(text_source(format!("Promise.resolve({ns_ref})")));
     }
 
     // Cross-chunk: check if the module needs namespace remapping (exports were renamed or namespace access)
@@ -365,10 +384,13 @@ impl DynamicImportDependencyTemplate {
     if let Some(ns_name) = ns_name {
       // Module's exports were renamed in the chunk or accessed as namespace.
       // Use .then(m => m.<ns_name>) to get the correct module namespace.
-      Some(format!("{import_promise}.then(m => m.{ns_name})"))
+      Some(append_source(
+        import_promise,
+        format!(".then(m => m.{ns_name})"),
+      ))
     } else {
       // Module's exports are not renamed in the chunk — direct import works.
-      Some(import_promise.into_owned())
+      Some(import_promise)
     }
   }
 }
@@ -397,14 +419,17 @@ impl DependencyTemplate for DynamicImportDependencyTemplate {
     // value rather than the namespace object, matching the standard
     // dynamic-import template (`ImportDependencyTemplate` in rspack_plugin_javascript).
     if import_dep.get_phase().is_source() {
-      content = format!(
-        "{content}.then({})",
-        code_generatable_context
-          .runtime_template
-          .returning_function("m[\"default\"]", "m")
+      content = append_source(
+        content,
+        format!(
+          ".then({})",
+          code_generatable_context
+            .runtime_template
+            .returning_function("m[\"default\"]", "m")
+        ),
       );
     }
 
-    source.replace(import_dep.range.start, import_dep.range.end, content, None);
+    source.replace_source(import_dep.range.start, import_dep.range.end, content, None);
   }
 }

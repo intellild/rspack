@@ -2,10 +2,26 @@
 #![allow(missing_docs)]
 
 use crate::{
-  BoxSource, CachedSource, ConcatSource, OriginalSource, RawBufferSource, RawStringSource,
-  ReplaceSource, ReplacementEnforce, RopeSource, Source, SourceExt, SourceMap, SourceMapSource,
-  SourceMapSourceOptions,
+  BoxSource, CachedSource, ConcatSource, OriginalSource, PlaceholderKey, PlaceholderSource,
+  RawBufferSource, RawStringSource, ReplaceSource, ReplacementEnforce, RopeSource, Source,
+  SourceExt, SourceMap, SourceMapSource, SourceMapSourceOptions,
+  rope::placeholder::ResolvedPlaceholderSource,
 };
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(serialize_bounds(
+  __S: rkyv::ser::Writer + rkyv::ser::Allocator + rkyv::rancor::Fallible
+))]
+#[rkyv(deserialize_bounds(
+  __D: rkyv::rancor::Fallible<Error: rkyv::rancor::Source>
+))]
+#[rkyv(bytecheck(bounds(
+  __C: rkyv::validation::ArchiveContext + rkyv::rancor::Fallible
+)))]
+pub enum CacheableReplacementContent {
+  Text(String),
+  Source(#[rkyv(omit_bounds)] Box<CacheableSource>),
+}
 
 /// Serializable representation of a [`Replacement`](crate::Replacement).
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -15,7 +31,7 @@ pub struct CacheableReplacement {
   /// End offset.
   pub end: u32,
   /// Replacement content.
-  pub content: String,
+  pub content: CacheableReplacementContent,
   /// Replacement name.
   pub name: Option<String>,
   /// Enforce order: 0 = Pre, 1 = Normal, 2 = Post.
@@ -43,6 +59,13 @@ pub enum CacheableSource {
   RawString {
     /// The string value.
     value: String,
+  },
+  /// [`PlaceholderSource`]
+  Placeholder {
+    /// Semantic placeholder key.
+    key: String,
+    /// Compatibility output used before resolution.
+    fallback: String,
   },
   /// [`OriginalSource`]
   Original {
@@ -96,6 +119,10 @@ pub enum CacheableSource {
 
 /// Convert a [`Source`] trait object into a serializable [`CacheableSource`].
 pub fn to_cacheable(source: &dyn Source) -> CacheableSource {
+  if let Some(s) = source.as_any().downcast_ref::<ResolvedPlaceholderSource>() {
+    return to_cacheable(s.replacement_source().as_ref());
+  }
+
   if let Some(s) = source.as_any().downcast_ref::<CachedSource>() {
     return CacheableSource::Cached {
       inner: Box::new(to_cacheable(s.inner().as_ref())),
@@ -112,6 +139,13 @@ pub fn to_cacheable(source: &dyn Source) -> CacheableSource {
   if let Some(s) = source.as_any().downcast_ref::<RawStringSource>() {
     return CacheableSource::RawString {
       value: s.source().into_string_lossy().into_owned(),
+    };
+  }
+
+  if let Some(s) = source.as_any().downcast_ref::<PlaceholderSource>() {
+    return CacheableSource::Placeholder {
+      key: s.key().as_str().to_owned(),
+      fallback: s.fallback().to_owned(),
     };
   }
 
@@ -157,7 +191,11 @@ pub fn to_cacheable(source: &dyn Source) -> CacheableSource {
       .map(|r| CacheableReplacement {
         start: r.start(),
         end: r.end(),
-        content: r.content().to_string(),
+        content: if let Some(source) = r.content_source() {
+          CacheableReplacementContent::Source(Box::new(to_cacheable(source.as_ref())))
+        } else {
+          CacheableReplacementContent::Text(r.content().into_owned())
+        },
         name: r.name().map(|n| n.to_string()),
         enforce: match r.enforce() {
           ReplacementEnforce::Pre => 0,
@@ -182,6 +220,9 @@ pub fn from_cacheable(cacheable: CacheableSource) -> BoxSource {
   match cacheable {
     CacheableSource::RawBuffer { buffer } => RawBufferSource::from(buffer).boxed(),
     CacheableSource::RawString { value } => RawStringSource::from(value).boxed(),
+    CacheableSource::Placeholder { key, fallback } => {
+      PlaceholderSource::new(PlaceholderKey::new(key), fallback).boxed()
+    }
     CacheableSource::Original { value, name } => OriginalSource::new(value, name).boxed(),
     CacheableSource::SourceMap {
       value,
@@ -226,7 +267,18 @@ pub fn from_cacheable(cacheable: CacheableSource) -> BoxSource {
             panic!("Invalid enforce value in cached replacement: {}", r.enforce)
           }
         };
-        source.replace_with_enforce(r.start, r.end, r.content, r.name, enforce);
+        match r.content {
+          CacheableReplacementContent::Text(content) => {
+            source.replace_with_enforce(r.start, r.end, content, r.name, enforce)
+          }
+          CacheableReplacementContent::Source(content) => source.replace_source_with_enforce(
+            r.start,
+            r.end,
+            from_cacheable(*content),
+            r.name,
+            enforce,
+          ),
+        }
       }
       source.boxed()
     }

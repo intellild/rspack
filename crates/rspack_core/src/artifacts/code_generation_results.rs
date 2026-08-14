@@ -32,6 +32,9 @@ impl CodeGenerationDataUrl {
   }
 }
 
+pub const AUTO_PUBLIC_PATH_JS_PLACEHOLDER_KEY_PREFIX: &str = "rspack:auto-public-path:javascript:";
+pub const AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX: &str = "rspack:auto-public-path:css:";
+
 // For performance, mark the js modules containing AUTO_PUBLIC_PATH_PLACEHOLDER
 #[derive(Clone, Debug)]
 pub struct CodeGenerationPublicPathAutoReplace(pub bool);
@@ -43,6 +46,7 @@ pub struct URLStaticMode;
 pub struct CodeGenerationDataFilename {
   filename: String,
   public_path: String,
+  public_path_auto: bool,
 }
 
 impl CodeGenerationDataFilename {
@@ -50,6 +54,15 @@ impl CodeGenerationDataFilename {
     Self {
       filename,
       public_path,
+      public_path_auto: false,
+    }
+  }
+
+  pub fn new_auto(filename: String) -> Self {
+    Self {
+      filename,
+      public_path: String::new(),
+      public_path_auto: true,
     }
   }
 
@@ -59,6 +72,10 @@ impl CodeGenerationDataFilename {
 
   pub fn public_path(&self) -> &str {
     &self.public_path
+  }
+
+  pub fn public_path_is_auto(&self) -> bool {
+    self.public_path_auto
   }
 }
 

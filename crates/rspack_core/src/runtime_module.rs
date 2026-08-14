@@ -171,13 +171,7 @@ pub async fn runtime_module_get_generated_code(
         compilation,
         runtime_template: &runtime_template,
       };
-      let source_str = module.generate_with_custom(&context).await?;
-      let source_map_kind = module.get_source_map_kind();
-      Ok(if source_map_kind.enabled() {
-        OriginalSource::new(source_str, module.identifier().as_str()).boxed()
-      } else {
-        RawStringSource::from(source_str).boxed()
-      })
+      module.generate_source_with_custom(&context).await
     })
     .await;
   let source = result?.clone();
@@ -212,7 +206,8 @@ pub async fn runtime_module_get_runtime_hash(
       compilation,
       runtime_template: &runtime_template,
     };
-    RspackHash::hash(&module.generate_with_custom(&context).await?, &mut hasher);
+    let source = module.generate_source_with_custom(&context).await?;
+    std::hash::Hash::hash(&source, &mut hasher);
   } else {
     use std::hash::Hash;
 
@@ -255,6 +250,31 @@ pub trait RuntimeModule:
     &self,
     context: &RuntimeModuleGenerateContext<'_>,
   ) -> rspack_error::Result<String>;
+  async fn generate_source(
+    &self,
+    context: &RuntimeModuleGenerateContext<'_>,
+  ) -> rspack_error::Result<BoxSource> {
+    let source = self.generate(context).await?;
+    Ok(if self.get_source_map_kind().enabled() {
+      OriginalSource::new(source, self.identifier().as_str()).boxed()
+    } else {
+      RawStringSource::from(source).boxed()
+    })
+  }
+  async fn generate_source_with_custom(
+    &self,
+    context: &RuntimeModuleGenerateContext<'_>,
+  ) -> rspack_error::Result<BoxSource> {
+    if let Some(custom_source) = self.get_custom_source() {
+      Ok(if self.get_source_map_kind().enabled() {
+        OriginalSource::new(custom_source, self.identifier().as_str()).boxed()
+      } else {
+        RawStringSource::from(custom_source).boxed()
+      })
+    } else {
+      self.generate_source(context).await
+    }
+  }
   async fn generate_with_custom(
     &self,
     context: &RuntimeModuleGenerateContext<'_>,

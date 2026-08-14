@@ -1,22 +1,16 @@
-use std::{borrow::Cow, sync::LazyLock};
+use std::borrow::Cow;
 
 use cow_utils::CowUtils;
 use rspack_core::{
   AssetInfo, ChunkGroupUkey, ChunkUkey, Compilation, ManifestAssetType, SourceType,
+  rspack_sources::{PlaceholderKey, PlaceholderSource},
 };
 use rspack_util::fx_hash::FxIndexSet;
 
 use crate::{SubresourceIntegrityHashFunction, integrity::compute_integrity};
 
 pub const PLACEHOLDER_PREFIX: &str = "*-*-*-CHUNK-SRI-HASH-";
-
-pub static PLACEHOLDER_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-  let escaped_prefix = regex::escape(PLACEHOLDER_PREFIX);
-  regex::Regex::new(&format!(
-    r"{escaped_prefix}[a-zA-Z0-9=/+]+(\s+sha\d{{3}}-[a-zA-Z0-9=/+]+)*"
-  ))
-  .expect("should initialize `Regex`")
-});
+pub const PLACEHOLDER_KEY_PREFIX: &str = "rspack:sri:chunk:";
 
 pub fn get_hash_variable(runtime_require_name: &str, source_type: SourceType) -> String {
   match source_type {
@@ -95,6 +89,20 @@ pub fn make_placeholder(
     PLACEHOLDER_PREFIX,
     &filler[PLACEHOLDER_PREFIX.len()..]
   )
+}
+
+pub fn make_placeholder_key(asset_type: &ManifestAssetType, id: &str) -> PlaceholderKey {
+  PlaceholderKey::new(format!("{PLACEHOLDER_KEY_PREFIX}{asset_type}:{id}"))
+}
+
+pub fn make_placeholder_source(
+  asset_type: ManifestAssetType,
+  hash_funcs: &Vec<SubresourceIntegrityHashFunction>,
+  id: &str,
+) -> PlaceholderSource {
+  let key = make_placeholder_key(&asset_type, id);
+  let fallback = rspack_util::json_stringify_str(&make_placeholder(asset_type, hash_funcs, id));
+  PlaceholderSource::new(key, fallback)
 }
 
 pub fn normalize_path(path: &str) -> Cow<'_, str> {

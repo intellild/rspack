@@ -259,11 +259,7 @@ pub fn append_hash(url: &str, hash: &str) -> String {
   format!(
     "{}{}{}",
     url,
-    if url.contains("?") {
-      "$$RSPACK_URL_AMP$$"
-    } else {
-      "?"
-    },
+    if url.contains("?") { "&" } else { "?" },
     hash
   )
 }
@@ -295,8 +291,7 @@ fn url_encode_path(file_path: &str) -> String {
       .split('/')
       .map(|p| { urlencoding::encode(p) })
       .join("/"),
-    // element.outerHTML will escape '&' so need to add a placeholder here
-    query_string.cow_replace("&", "$$RSPACK_URL_AMP$$")
+    query_string
   )
 }
 

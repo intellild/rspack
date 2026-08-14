@@ -58,7 +58,7 @@ bulk-build append-only RopeArena
        ↓
 balanced Branch nodes + cached NodeSummary
        ↓
-non-recursive in-order traversal
+contiguous leaf NodeIds (stack-free, no retained leaf index)
        ↓
 source / rope / size / writer / StreamChunks
 ```
@@ -68,6 +68,11 @@ canonical in-order child sequence, so independently balanced ropes with the same
 have the same identity. `NodeSummary` tracks bytes, final generated line/UTF-16 column, and ASCII
 status without retaining a flattened string.
 
+The bulk builder allocates all child leaves before branch nodes, so leaf IDs are the contiguous
+range `0..len` in canonical order. Production traversal walks that range directly. Parent-link
+and fixed-stack tree walks are retained only in the `codspeed` benchmark as differential
+references; they are slower for this frozen bulk-built topology.
+
 `TemplateRopeSource` is the mutable boundary for typed placeholders and deliberately does not
 implement `Source`. A `PlaceholderKey` maps to one stable `PlaceholderId` slot, and repeated
 occurrences share the resolved text or frozen child source. `freeze()` rejects unresolved or
@@ -75,6 +80,14 @@ conflicting slots and returns a `RopeSource`; consequently unresolved templates 
 hashed, mapped, or wrapped in `CachedSource`. Ordinary source text is always a text/child node,
 even when its bytes equal an old marker string.
 
+When a placeholder must survive a frozen source or plugin-hook boundary, use a
+`PlaceholderSource` leaf. `Source::rope_with_placeholders` emits its semantic key separately from
+the compatibility fallback bytes, and composition/transform sources forward those events.
+`replace_source_placeholders` never searches text: ordinary text that equals a fallback remains
+untouched. The resolved view streams events once for `source`, `buffer`, and `to_writer`; source
+maps and persistent-cache serialization lazily use an equivalent `ReplaceSource`, so late
+resolution preserves mapping behavior. An unresolved event remains typed when a resolver returns
+`None`.
 `ReplaceSource` uses hybrid replacement storage. Monotonic producers retain the compact `Vec`
 append fast path, and small out-of-order lists stay in the same representation because it has lower
 constant cost. A large out-of-order list is bulk-built into an append-only AVL arena; further

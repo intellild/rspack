@@ -1,12 +1,13 @@
-use cow_utils::CowUtils;
 use rspack_core::{
-  Context, CssLayer, CssModuleRenderCondition,
+  AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX, Context, CssLayer, CssModuleRenderCondition,
   rspack_sources::{
     BoxSource, ConcatSource, MapOptions, ObjectPool, RawStringSource, ReplaceSource, Source,
-    SourceExt,
+    SourceExt, replace_source_placeholders,
   },
 };
 use rspack_util::{base64::encode_to_string, identifier::make_paths_relative};
+
+use crate::utils::css_escape_string;
 
 const CSS_UTF8_CHARSET: &str = r#"@charset "UTF-8";"#;
 
@@ -114,11 +115,14 @@ impl CssSourceBuilder {
     let include_sources_content = self.include_sources_content;
     let source_map_context = self.source_map_context.clone();
     let source = self.into_source();
-    let mut css_text = source
-      .source()
-      .into_string_lossy()
-      .cow_replace(crate::utils::AUTO_PUBLIC_PATH_PLACEHOLDER, "")
-      .into_owned();
+    let resolved_source = replace_source_placeholders(source.clone(), |key| {
+      key
+        .as_str()
+        .strip_prefix(AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX)
+        .map(css_escape_string)
+    })
+    .expect("CSS source should fit in u32 offsets");
+    let mut css_text = resolved_source.source().into_string_lossy().into_owned();
 
     if let Some(mut source_map) = source.map(&ObjectPool::default(), &MapOptions::default()) {
       if !source_map_context.as_str().is_empty() {
@@ -180,7 +184,9 @@ impl CssSourceBuilder {
 #[cfg(test)]
 mod tests {
   use concat_string::concat_string;
-  use rspack_core::rspack_sources::{RawStringSource, Source, SourceExt};
+  use rspack_core::rspack_sources::{
+    PlaceholderKey, PlaceholderSource, RawStringSource, Source, SourceExt,
+  };
 
   use super::*;
 
@@ -339,23 +345,23 @@ mod tests {
   }
 
   #[test]
-  fn css_source_builder_css_text_removes_auto_public_path_placeholder() {
+  fn css_source_builder_css_text_resolves_auto_public_path_placeholder() {
     let mut builder = CssSourceBuilder::new(true, true, Default::default());
 
-    builder.push_css_source(
-      css_source(&concat_string!(
-        ".a{background:url(",
-        crate::utils::AUTO_PUBLIC_PATH_PLACEHOLDER,
-        ");}"
+    builder.add(RawStringSource::from_static(".a{background:url("));
+    builder.add(PlaceholderSource::new(
+      PlaceholderKey::new(concat_string!(
+        AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX,
+        "asset.png"
       )),
-      &[],
-      false,
-    );
+      concat_string!(crate::utils::AUTO_PUBLIC_PATH_PLACEHOLDER, "asset.png"),
+    ));
+    builder.add(RawStringSource::from_static(");}"));
 
     assert_eq!(
       builder.into_css_text(),
       r#"@charset "UTF-8";
-.a{background:url();}"#
+.a{background:url(asset.png);}"#
     );
   }
 }

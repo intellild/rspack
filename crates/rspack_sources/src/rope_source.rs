@@ -11,7 +11,7 @@ use crate::{
   object_pool::ObjectPool,
   rope::{
     NodeId,
-    arena::{Node, RopeArena},
+    arena::{ArenaLeaves, Node, RopeArena},
     builder,
   },
 };
@@ -24,7 +24,9 @@ use crate::{
 pub struct RopeSource {
   arena: RopeArena,
   root: Option<NodeId>,
-  leaves: Vec<NodeId>,
+  len: usize,
+  #[cfg(feature = "codspeed")]
+  indexed_leaves: Vec<NodeId>,
 }
 
 impl RopeSource {
@@ -40,22 +42,25 @@ impl RopeSource {
   /// Bulk-build a balanced rope from already boxed sources.
   pub fn from_boxed(sources: Vec<BoxSource>) -> Self {
     let (arena, root, leaves) = builder::build(sources);
-    debug_assert!(arena.leaves(root).eq(leaves.iter().copied()));
+    let len = leaves.len();
+    debug_assert!(arena.leaves(len).eq(leaves.iter().copied()));
     Self {
       arena,
       root,
-      leaves,
+      len,
+      #[cfg(feature = "codspeed")]
+      indexed_leaves: leaves,
     }
   }
 
   /// Number of logical child sources in this rope.
   pub fn len(&self) -> usize {
-    self.leaves.len()
+    self.len
   }
 
   /// Whether the rope has no children.
   pub fn is_empty(&self) -> bool {
-    self.leaves.is_empty()
+    self.len == 0
   }
 
   /// Whether every emitted text chunk is ASCII.
@@ -84,7 +89,7 @@ impl RopeSource {
   fn children(&self) -> RopeChildren<'_> {
     RopeChildren {
       arena: &self.arena,
-      leaves: self.leaves.iter(),
+      leaves: self.arena.leaves(self.len),
     }
   }
 
@@ -92,12 +97,67 @@ impl RopeSource {
   pub(crate) fn child_sources(&self) -> impl ExactSizeIterator<Item = &BoxSource> {
     self.children()
   }
+
+  /// Materialize by traversing the arena with the former fixed stack.
+  /// Materialize by following parent links without an explicit stack.
+  #[cfg(feature = "codspeed")]
+  #[doc(hidden)]
+  pub fn benchmark_source_with_parent(&self) -> String {
+    let mut output = String::with_capacity(self.size());
+    for id in self.arena.parent_leaves(self.root, self.len) {
+      match self.arena.get(id) {
+        Node::ChildSource { source, .. } => source.rope(&mut |chunk| output.push_str(chunk)),
+        Node::Branch { .. } => unreachable!("parent traversal only yields leaves"),
+      }
+    }
+    output
+  }
+
+  #[cfg(feature = "codspeed")]
+  #[doc(hidden)]
+  pub fn benchmark_source_with_stack(&self) -> String {
+    let mut output = String::with_capacity(self.size());
+    for id in self.arena.stack_leaves(self.root, self.len) {
+      match self.arena.get(id) {
+        Node::ChildSource { source, .. } => source.rope(&mut |chunk| output.push_str(chunk)),
+        Node::Branch { .. } => unreachable!("stack traversal only yields leaves"),
+      }
+    }
+    output
+  }
+
+  /// Materialize by traversing the former retained leaf-id index.
+  #[cfg(feature = "codspeed")]
+  #[doc(hidden)]
+  pub fn benchmark_source_with_index(&self) -> String {
+    let mut output = String::with_capacity(self.size());
+    for id in &self.indexed_leaves {
+      match self.arena.get(*id) {
+        Node::ChildSource { source, .. } => source.rope(&mut |chunk| output.push_str(chunk)),
+        Node::Branch { .. } => unreachable!("leaf index only contains leaves"),
+      }
+    }
+    output
+  }
+
+  /// Return node count, tree height, node bytes and old retained index bytes.
+  #[cfg(feature = "codspeed")]
+  #[doc(hidden)]
+  pub fn benchmark_arena_stats(&self) -> (usize, u8, usize, usize) {
+    let (nodes, height, node_bytes) = self.arena.benchmark_stats(self.root);
+    (
+      nodes,
+      height,
+      node_bytes,
+      self.indexed_leaves.capacity() * std::mem::size_of::<NodeId>(),
+    )
+  }
 }
 
 impl Source for RopeSource {
   fn source(&self) -> SourceValue<'_> {
     let mut children = self.children();
-    if self.leaves.len() == 1 {
+    if self.len == 1 {
       return children
         .next()
         .expect("single-leaf rope has a child")
@@ -114,9 +174,15 @@ impl Source for RopeSource {
     }
   }
 
+  fn rope_with_placeholders<'a>(&'a self, on_event: &mut dyn FnMut(crate::SourceEvent<'a>)) {
+    for child in self.children() {
+      child.rope_with_placeholders(on_event);
+    }
+  }
+
   fn buffer(&self) -> Cow<'_, [u8]> {
     let mut children = self.children();
-    if self.leaves.len() == 1 {
+    if self.len == 1 {
       return children
         .next()
         .expect("single-leaf rope has a child")
@@ -168,7 +234,7 @@ impl StreamChunks for RopeSource {
 impl Hash for RopeSource {
   fn hash<H: Hasher>(&self, state: &mut H) {
     "RopeSource".hash(state);
-    self.leaves.len().hash(state);
+    self.len.hash(state);
     for child in self.children() {
       child.hash(state);
     }
@@ -177,7 +243,7 @@ impl Hash for RopeSource {
 
 impl PartialEq for RopeSource {
   fn eq(&self, other: &Self) -> bool {
-    self.leaves.len() == other.leaves.len()
+    self.len == other.len
       && self
         .children()
         .zip(other.children())
@@ -199,18 +265,16 @@ impl std::fmt::Debug for RopeSource {
 
 struct RopeChildren<'a> {
   arena: &'a RopeArena,
-  leaves: std::slice::Iter<'a, NodeId>,
+  leaves: ArenaLeaves,
 }
 
 impl<'a> Iterator for RopeChildren<'a> {
   type Item = &'a BoxSource;
 
   fn next(&mut self) -> Option<Self::Item> {
-    self.leaves.next().map(|id| match self.arena.get(*id) {
+    self.leaves.next().map(|id| match self.arena.get(id) {
       Node::ChildSource { source, .. } => source,
-      Node::Branch { .. } => {
-        unreachable!("freeze leaf index only contains ChildSource nodes")
-      }
+      Node::Branch { .. } => unreachable!("arena leaf iterator only yields ChildSource nodes"),
     })
   }
 
