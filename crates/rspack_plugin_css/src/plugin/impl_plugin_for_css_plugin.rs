@@ -25,6 +25,7 @@ use smol_str::SmolStr;
 
 use crate::{
   CssPlugin,
+  css_syntax::serialize_url_value,
   dependency::{
     CssIcssSymbolDependencyTemplate, CssImportDependency, CssImportDependencyTemplate,
     CssLocalIdentDependencyTemplate, CssSelfReferenceLocalIdentDependencyTemplate,
@@ -37,8 +38,8 @@ use crate::{
   runtime::CssLoadingRuntimeModule,
   utils::{
     append_css_export_type_key, css_attribute_export_type, css_dependency_export_type,
-    css_dependency_meta, css_escape_string, css_module_has_charset,
-    css_module_is_import_dependency, css_module_resource, css_render_conditions_from_module,
+    css_dependency_meta, css_module_has_charset, css_module_is_import_dependency,
+    css_module_resource, css_render_conditions_from_module,
   },
 };
 
@@ -112,7 +113,7 @@ impl CssPlugin {
       key
         .as_str()
         .strip_prefix(AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX)
-        .map(|filename| css_escape_string(&format!("{relative}{filename}")))
+        .map(|filename| serialize_url_value(&format!("{relative}{filename}")))
     })
     .map_err(|error| rspack_error::error!("{error}"))?;
     let mut diagnostics = vec![];

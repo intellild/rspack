@@ -9,7 +9,7 @@ use rspack_core::{
   },
 };
 
-use crate::utils::{AUTO_PUBLIC_PATH_PLACEHOLDER, css_escape_string};
+use crate::{css_syntax::serialize_url_value, utils::AUTO_PUBLIC_PATH_PLACEHOLDER};
 
 #[cacheable]
 #[derive(Debug, Clone)]
@@ -41,7 +41,7 @@ impl CssUrlDependency {
     let code_gen_result = compilation.code_generation_results.get_one(identifier);
 
     if let Some(url) = code_gen_result.data.get::<CodeGenerationDataUrl>() {
-      Some(RawStringSource::from(css_escape_string(url.inner())).boxed())
+      Some(RawStringSource::from(serialize_url_value(url.inner())).boxed())
     } else if let Some(data) = code_gen_result.data.get::<CodeGenerationDataFilename>() {
       let filename = data.filename();
       if data.public_path_is_auto() {
@@ -50,13 +50,13 @@ impl CssUrlDependency {
             PlaceholderKey::new(format!(
               "{AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX}{filename}"
             )),
-            css_escape_string(&format!("{AUTO_PUBLIC_PATH_PLACEHOLDER}{filename}")),
+            serialize_url_value(&format!("{AUTO_PUBLIC_PATH_PLACEHOLDER}{filename}")),
           )
           .boxed(),
         )
       } else {
         Some(
-          RawStringSource::from(css_escape_string(&format!(
+          RawStringSource::from(serialize_url_value(&format!(
             "{}{filename}",
             data.public_path()
           )))

@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use dyn_clone::{DynClone, clone_trait_object};
 use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_hash::RspackHasher;
-use rspack_sources::{ReplaceSource, ReplacementEnforce};
+use rspack_sources::{ReplaceSource, ReplacementEnforce, Source};
 use rspack_util::ext::AsAny;
 
 use crate::{
@@ -119,6 +119,30 @@ impl<'a> TemplateReplaceSource<'a> {
       (start != end).then(|| DependencyRange::new(start, end)),
       matches!(used_names, GeneratedCodeUsedNames::Scan).then_some(content),
     );
+  }
+  pub fn replace_source<T: Source + 'static>(
+    &mut self,
+    start: u32,
+    end: u32,
+    content: T,
+    name: Option<String>,
+  ) {
+    let generated = content.source().into_string_lossy();
+    self.record_edit(start, end, &generated, GeneratedCodeUsedNames::Scan);
+    drop(generated);
+    self.source.replace_source(start, end, content, name);
+  }
+
+  pub fn insert_source<T: Source + 'static>(
+    &mut self,
+    start: u32,
+    content: T,
+    name: Option<String>,
+  ) {
+    let generated = content.source().into_string_lossy();
+    self.record_edit(start, start, &generated, GeneratedCodeUsedNames::Scan);
+    drop(generated);
+    self.source.insert_source(start, content, name);
   }
 
   pub fn replace(&mut self, start: u32, end: u32, content: String, name: Option<String>) {

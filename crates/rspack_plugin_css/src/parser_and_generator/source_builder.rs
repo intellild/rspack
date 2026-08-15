@@ -7,7 +7,7 @@ use rspack_core::{
 };
 use rspack_util::{base64::encode_to_string, identifier::make_paths_relative};
 
-use crate::utils::css_escape_string;
+use crate::css_syntax::serialize_url_value;
 
 const CSS_UTF8_CHARSET: &str = r#"@charset "UTF-8";"#;
 
@@ -119,7 +119,7 @@ impl CssSourceBuilder {
       key
         .as_str()
         .strip_prefix(AUTO_PUBLIC_PATH_CSS_PLACEHOLDER_KEY_PREFIX)
-        .map(css_escape_string)
+        .map(serialize_url_value)
     })
     .expect("CSS source should fit in u32 offsets");
     let mut css_text = resolved_source.source().into_string_lossy().into_owned();
@@ -204,25 +204,23 @@ mod tests {
     assert!(warnings.is_empty());
 
     deps
-      .into_iter()
+      .iter()
       .filter_map(|dep| match dep {
-        css_module_lexer::Dependency::Import {
-          media,
-          supports,
-          layer,
-          ..
-        } => Some(CssModuleRenderCondition::new(
-          media.map(|media| media.trim().into()),
-          supports.map(|supports| supports.trim().into()),
-          layer.map(|layer| {
-            let layer = layer.trim();
-            if layer.is_empty() {
-              CssLayer::Anonymous
-            } else {
-              CssLayer::Named(layer.into())
-            }
-          }),
-        )),
+        css_module_lexer::Dependency::Import { attributes, .. } => {
+          let attributes = deps.import_attributes(*attributes);
+          Some(CssModuleRenderCondition::new(
+            attributes.media().map(|media| media.trim().into()),
+            attributes.supports().map(|supports| supports.trim().into()),
+            attributes.layer().map(|layer| {
+              let layer = layer.trim();
+              if layer.is_empty() {
+                CssLayer::Anonymous
+              } else {
+                CssLayer::Named(layer.into())
+              }
+            }),
+          ))
+        }
         _ => None,
       })
       .collect()
