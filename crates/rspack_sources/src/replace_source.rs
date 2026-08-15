@@ -200,6 +200,12 @@ pub struct Replacement {
 }
 
 impl Replacement {
+  pub(crate) fn rewrite_text_content(&mut self, rewrite: &mut impl FnMut(&mut Cow<'static, str>)) {
+    if let ReplacementContent::Text(content) = &mut self.content {
+      rewrite(content);
+    }
+  }
+
   /// Get the start offset.
   pub fn start(&self) -> u32 {
     self.start
@@ -285,6 +291,17 @@ impl ReplaceSource {
       },
       ReplacementTree::benchmark_stats,
     )
+  }
+
+  /// Rewrite replacement contents without changing their ranges or ordering.
+  /// The callback may update owned content in place or replace borrowed content.
+  pub fn rewrite_replacement_contents(&mut self, mut rewrite: impl FnMut(&mut Cow<'static, str>)) {
+    for replacement in &mut self.replacements {
+      replacement.rewrite_text_content(&mut rewrite);
+    }
+    if let Some(tree) = &mut self.replacement_tree {
+      tree.rewrite_text_contents(&mut rewrite);
+    }
   }
 
   /// Insert a content at start.

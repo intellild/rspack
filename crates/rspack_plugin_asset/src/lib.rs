@@ -8,13 +8,14 @@ use rspack_core::{
   AssetGeneratorDataUrlFnCtx, AssetGeneratorImportMode, AssetInfo, AssetParserDataUrl,
   BuildMetaDefaultObject, BuildMetaExportsType, ChunkGraph, ChunkUkey, CodeGenerationDataAssetInfo,
   CodeGenerationDataFilename, CodeGenerationDataUrl, CodeGenerationPublicPathAutoReplace,
-  Compilation, CompilationRenderManifest, CompilerOptions, DependencyType, Filename,
-  GenerateContext, GeneratorOptions, JavascriptParserUrl, ManifestAssetType, Module,
-  ModuleArgument, ModuleGraph, NAMESPACE_OBJECT_EXPORT, NormalModule, ParseContext,
-  ParserAndGenerator, ParserOptions, PathData, Plugin, PublicPath, RenderManifestEntry,
-  ResourceData, RuntimeGlobals, RuntimeSpec, SourceType,
+  Compilation, CompilationRenderManifest, CompilerOptions, ConcatenationScope,
+  ConcatenationScopeInfoMode, DependencyType, Filename, GenerateContext, GeneratedSource,
+  GeneratorOptions, JavascriptParserUrl, ManifestAssetType, Module, ModuleArgument, ModuleGraph,
+  NAMESPACE_OBJECT_EXPORT, NormalModule, ParseContext, ParserAndGenerator, ParserOptions, PathData,
+  Plugin, PublicPath, RenderManifestEntry, ResourceData, RuntimeGlobals, RuntimeSpec, SourceType,
   rspack_sources::{
-    BoxSource, PlaceholderKey, PlaceholderSource, RawStringSource, RopeSource, SourceExt,
+    BoxSource, PlaceholderKey, PlaceholderSource, RawStringSource, ReplaceSource, RopeSource,
+    SourceExt,
   },
 };
 use rspack_error::{Diagnostic, IntoTWithDiagnosticArray, Result, error};
@@ -46,6 +47,44 @@ static ASSET_AND_CSS_URL_TYPES: &[SourceType; 2] = &[SourceType::Asset, SourceTy
 static ASSET_TYPES: &[SourceType; 1] = &[SourceType::Asset];
 
 const DEFAULT_ENCODING: &str = "base64";
+
+fn render_concatenated_asset_source(
+  scope: &mut ConcatenationScope,
+  prefix: impl Into<String>,
+  infix: &'static str,
+  exported_content: BoxSource,
+  suffix: &'static str,
+) -> GeneratedSource {
+  let prefix = prefix.into();
+  let faster_module_concatenation = scope.is_faster_module_concatenation();
+  let namespace_export = scope.register_generated_namespace_export(NAMESPACE_OBJECT_EXPORT);
+  let rendered_namespace_export = if faster_module_concatenation {
+    NAMESPACE_OBJECT_EXPORT
+  } else {
+    namespace_export.as_ref()
+  };
+  let source = RopeSource::from_boxed(vec![
+    RawStringSource::from(prefix.clone()).boxed(),
+    RawStringSource::from(rendered_namespace_export.to_string()).boxed(),
+    RawStringSource::from_static(infix).boxed(),
+    exported_content,
+    RawStringSource::from_static(suffix).boxed(),
+  ])
+  .boxed();
+  if !faster_module_concatenation {
+    return source.into();
+  }
+
+  let start = prefix.len() as u32;
+  let mut source = ReplaceSource::new(source);
+  source.replace(
+    start,
+    start + NAMESPACE_OBJECT_EXPORT.len() as u32,
+    namespace_export.to_string(),
+    None,
+  );
+  GeneratedSource::generated_concatenation(source)
+}
 
 #[cacheable]
 #[derive(Debug, Clone)]
@@ -330,6 +369,10 @@ const DEFAULT_MAX_SIZE: f64 = 8096.0;
 #[cacheable_dyn]
 #[async_trait::async_trait]
 impl ParserAndGenerator for AssetParserAndGenerator {
+  fn concatenation_scope_info_mode(&self) -> ConcatenationScopeInfoMode {
+    ConcatenationScopeInfoMode::GenerateAtCodegen
+  }
+
   fn source_types(&self, module: &dyn Module, module_graph: &ModuleGraph) -> &[SourceType] {
     let module_id = module.identifier();
     if self.emit
@@ -519,7 +562,7 @@ impl ParserAndGenerator for AssetParserAndGenerator {
     source: &BoxSource,
     module: &dyn Module,
     generate_context: &mut GenerateContext,
-  ) -> Result<BoxSource> {
+  ) -> Result<GeneratedSource> {
     let compilation = generate_context.compilation;
     let asset_build_info = module
       .build_info()
@@ -547,9 +590,7 @@ impl ParserAndGenerator for AssetParserAndGenerator {
           } else {
             RawStringSource::from(format!(
               "{}({})",
-              generate_context
-                .runtime_template
-                .render_runtime_globals(&RuntimeGlobals::TO_BINARY),
+              generate_context.render_runtime_globals(&RuntimeGlobals::TO_BINARY),
               rspack_util::json_stringify_str(&encoded_source)
             ))
             .boxed()
@@ -638,9 +679,7 @@ impl ParserAndGenerator for AssetParserAndGenerator {
           } else {
             RawStringSource::from(format!(
               r#"{} + "{}""#,
-              generate_context
-                .runtime_template
-                .render_runtime_globals(&RuntimeGlobals::PUBLIC_PATH),
+              generate_context.render_runtime_globals(&RuntimeGlobals::PUBLIC_PATH),
               original_filename
             ))
             .boxed()
@@ -671,37 +710,31 @@ impl ParserAndGenerator for AssetParserAndGenerator {
         };
 
         if generate_context.requested_source_type == SourceType::CssUrl {
-          return Ok(RawStringSource::from_static("").boxed());
+          return Ok(RawStringSource::from_static("").boxed().into());
         }
 
         if import_mode.is_preserve() && parsed_asset_config.is_resource() {
           let is_module = compilation.options.output.module;
           if let Some(ref mut scope) = generate_context.concatenation_scope {
-            scope.register_namespace_export(NAMESPACE_OBJECT_EXPORT);
             if is_module {
-              return Ok(
-                RopeSource::from_boxed(vec![
-                  RawStringSource::from(format!(r#"import {NAMESPACE_OBJECT_EXPORT} from "#))
-                    .boxed(),
-                  exported_content,
-                  RawStringSource::from_static(";").boxed(),
-                ])
-                .boxed(),
-              );
+              return Ok(render_concatenated_asset_source(
+                scope,
+                "import ",
+                " from ",
+                exported_content,
+                ";",
+              ));
             } else {
               let supports_const = compilation.options.output.environment.supports_const();
               let declaration_kind = if supports_const { "const" } else { "var" };
-              return Ok(
-                RopeSource::from_boxed(vec![
-                  RawStringSource::from(format!(
-                    r#"{declaration_kind} {NAMESPACE_OBJECT_EXPORT} = require("#
-                  ))
-                  .boxed(),
-                  exported_content,
-                  RawStringSource::from_static(");").boxed(),
-                ])
-                .boxed(),
-              );
+              scope.register_used_name("require".into());
+              return Ok(render_concatenated_asset_source(
+                scope,
+                format!("{declaration_kind} "),
+                " = require(",
+                exported_content,
+                ");",
+              ));
             }
           } else {
             return Ok(
@@ -716,26 +749,22 @@ impl ParserAndGenerator for AssetParserAndGenerator {
                 exported_content,
                 RawStringSource::from_static(");").boxed(),
               ])
-              .boxed(),
+              .boxed()
+              .into(),
             );
           }
         };
 
         if let Some(ref mut scope) = generate_context.concatenation_scope {
-          scope.register_namespace_export(NAMESPACE_OBJECT_EXPORT);
           let supports_const = compilation.options.output.environment.supports_const();
           let declaration_kind = if supports_const { "const" } else { "var" };
-          Ok(
-            RopeSource::from_boxed(vec![
-              RawStringSource::from(format!(
-                r#"{declaration_kind} {NAMESPACE_OBJECT_EXPORT} = "#
-              ))
-              .boxed(),
-              exported_content,
-              RawStringSource::from_static(";").boxed(),
-            ])
-            .boxed(),
-          )
+          Ok(render_concatenated_asset_source(
+            scope,
+            format!("{declaration_kind} "),
+            " = ",
+            exported_content,
+            ";",
+          ))
         } else {
           Ok(
             RopeSource::from_boxed(vec![
@@ -749,7 +778,8 @@ impl ParserAndGenerator for AssetParserAndGenerator {
               exported_content,
               RawStringSource::from_static(";").boxed(),
             ])
-            .boxed(),
+            .boxed()
+            .into(),
           )
         }
       }
@@ -790,7 +820,7 @@ impl ParserAndGenerator for AssetParserAndGenerator {
             .data
             .insert(CodeGenerationDataAssetInfo::new(asset_info));
 
-          Ok(source.clone().boxed())
+          Ok(source.clone().boxed().into())
         }
       }
       _ => panic!(

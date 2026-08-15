@@ -50,6 +50,15 @@ pub(crate) struct ReplacementTree {
 }
 
 impl ReplacementTree {
+  pub(crate) fn rewrite_text_contents(
+    &mut self,
+    rewrite: &mut impl FnMut(&mut std::borrow::Cow<'static, str>),
+  ) {
+    for node in &mut self.nodes {
+      node.replacement.rewrite_text_content(rewrite);
+    }
+  }
+
   pub(crate) fn from_sorted(replacements: Vec<Replacement>) -> Self {
     let len = replacements.len();
     let mut replacements = replacements.into_iter().map(Some).collect::<Vec<_>>();
