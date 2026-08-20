@@ -1,0 +1,3 @@
+```js title=main.js
+server-only-package included: false
+```
