@@ -5,6 +5,9 @@ settings:
   dedupePeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@rsbuild/core>@rspack/core': workspace:*
+
 catalogs:
   default:
     '@actions/core':
@@ -1249,6 +1252,9 @@ importers:
       '@rsbuild/plugin-tailwindcss':
         specifier: 'catalog:'
         version: 2.0.3(@rsbuild/core@2.1.13)(@rspack/core@2.2.1)
+      '@rspack/core':
+        specifier: workspace:*
+        version: link:../packages/rspack
       '@rspress/core':
         specifier: 'catalog:'
         version: 2.0.19(@module-federation/runtime-tools@2.8.2)(@rspack/core@2.2.1)(core-js@3.50.0)(micromark-util-types@2.0.2)(micromark@4.0.2)
@@ -9414,7 +9420,7 @@ snapshots:
 
   '@rsbuild/core@2.1.13(@module-federation/runtime-tools@2.8.2)(core-js@3.50.0)':
     dependencies:
-      '@rspack/core': 2.1.10(@module-federation/runtime-tools@2.8.2)(@swc/helpers@0.5.23)
+      '@rspack/core': link:packages/rspack
       '@swc/helpers': 0.5.23
     optionalDependencies:
       core-js: 3.50.0
@@ -9423,7 +9429,7 @@ snapshots:
 
   '@rsbuild/core@2.2.0-rc.0(@module-federation/runtime-tools@2.8.2)(core-js@3.50.0)':
     dependencies:
-      '@rspack/core': 2.2.0-rc.0(@module-federation/runtime-tools@2.8.2)(@swc/helpers@0.5.23)
+      '@rspack/core': link:packages/rspack
       '@swc/helpers': 0.5.23
     optionalDependencies:
       core-js: 3.50.0

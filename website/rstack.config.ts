@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { Configuration } from '@rspack/core';
 import { define } from 'rstack';
 
 define.doc(async () => {
@@ -32,6 +33,7 @@ define.doc(async () => {
     lang: 'en',
     globalStyles: path.join(import.meta.dirname, 'theme', 'index.css'),
     markdown: {
+      crossCompilerCache: false,
       link: {
         checkAnchors: true,
       },
@@ -51,7 +53,7 @@ define.doc(async () => {
     },
     route: {
       cleanUrls: true,
-      exclude: ['**/types/*.mdx'],
+      exclude: ['**/types/*.mdx', 'zh/config/file.js'],
     },
     plugins: [
       pluginClientRedirects({
@@ -182,6 +184,53 @@ define.doc(async () => {
       },
     ],
     builderConfig: {
+      tools: {
+        rspack(config) {
+          const rspackConfig = config as Configuration;
+          const enableMdxLoaderCache =
+            process.env.RSPACK_MDX_LOADER_CACHE === 'true';
+          const enableMdxLoaderParallel =
+            process.env.RSPACK_MDX_LOADER_PARALLEL === 'true';
+
+          if (enableMdxLoaderCache) {
+            rspackConfig.experiments ??= {};
+            rspackConfig.experiments.newCache = {
+              codeGeneration: false,
+              devtool: false,
+              loader: true,
+              minimize: false,
+            };
+          }
+
+          for (const rule of rspackConfig.module?.rules ?? []) {
+            if (!rule || typeof rule !== 'object') {
+              continue;
+            }
+
+            for (const oneOf of rule.oneOf ?? []) {
+              if (!oneOf || typeof oneOf !== 'object') {
+                continue;
+              }
+
+              const uses = Array.isArray(oneOf.use)
+                ? oneOf.use
+                : oneOf.use
+                  ? [oneOf.use]
+                  : [];
+
+              for (const use of uses) {
+                if (
+                  typeof use === 'object' &&
+                  /[\\/]mdx[\\/]loader\.js$/.test(use.loader)
+                ) {
+                  use.cache = enableMdxLoaderCache;
+                  use.parallel = enableMdxLoaderParallel;
+                }
+              }
+            }
+          }
+        },
+      },
       plugins: [
         pluginSass(),
         pluginTailwindcss(),

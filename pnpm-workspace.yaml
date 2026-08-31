@@ -177,6 +177,9 @@ dedupePeers: true
 
 autoInstallPeers: false
 
+overrides:
+  '@rsbuild/core>@rspack/core': workspace:*
+
 peerDependencyRules:
   ignoreMissing:
     - webpack
