@@ -33,7 +33,15 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const rspressRoot = path.join(WEBSITE_DIR, 'node_modules/@rspress/core');
 const mdxLoaderPath = path.join(rspressRoot, 'dist/node/mdx/loader.js');
-const rsBin = path.join(WEBSITE_DIR, 'node_modules/.bin/rs');
+const rspressBin = path.join(WEBSITE_DIR, 'node_modules/.bin/rspress');
+const rspressConfigPath = path.join(
+  WEBSITE_DIR,
+  'node_modules/rstack/dist/rspressConfig.js',
+);
+const rspackPackagePath = path.join(
+  WEBSITE_DIR,
+  'node_modules/@rspack/core/package.json',
+);
 
 const trackedFiles = new Map();
 let originalLoaderSource;
@@ -204,7 +212,7 @@ async function startDevServer(cacheEnabled) {
     nothrow: true,
     quiet: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-  })`${rsBin} doc dev --host 127.0.0.1 --port ${port}`;
+  })`${rspressBin} dev --config ${rspressConfigPath} --host 127.0.0.1 --port ${port}`;
 
   const appendOutput = (chunk) => {
     const text = chunk.toString();
@@ -349,16 +357,6 @@ async function runCacheEnabledCase() {
     `console.log('${DEPENDENCY_PROBE_VALUE}');\n`,
   );
   await waitForBuild(server, outputOffset, 'zh/config/file.js');
-  assert.equal(
-    await probeCount(CACHE_MDX_PATH),
-    2,
-    'cache.mdx loader should run after file.js changes',
-  );
-  assert.equal(
-    await probeCount(ENTRY_MDX_PATH),
-    2,
-    'entry.mdx loader should not run after file.js changes',
-  );
 
   const updatedRouteSource = await fetchText(cacheModule.routeUrl);
   const compiledChunkMatch = updatedRouteSource.match(
@@ -368,9 +366,20 @@ async function runCacheEnabledCase() {
   const compiledSource = await fetchText(
     `${origin}/static/js/async/${compiledChunkMatch[1]}.js`,
   );
-  assert(
-    compiledSource.includes(DEPENDENCY_PROBE_VALUE),
-    'The updated file.js content should be present in the compiled MDX output',
+  const dependencyRefreshResult = {
+    cacheMdxLoaderExecutions: await probeCount(CACHE_MDX_PATH),
+    compiledOutputUpdated: compiledSource.includes(DEPENDENCY_PROBE_VALUE),
+    entryMdxLoaderExecutions: await probeCount(ENTRY_MDX_PATH),
+  };
+  console.log('Dependency refresh result:', dependencyRefreshResult);
+  assert.deepEqual(
+    dependencyRefreshResult,
+    {
+      cacheMdxLoaderExecutions: 2,
+      compiledOutputUpdated: true,
+      entryMdxLoaderExecutions: 2,
+    },
+    'file.js should invalidate only cache.mdx and update its compiled output',
   );
   console.log(
     chalk.green('✓ changing file.js invalidates cache.mdx and updates output'),
@@ -406,6 +415,8 @@ async function main() {
     [CACHE_MDX_PATH, ENTRY_MDX_PATH, FILE_DEPENDENCY_PATH].map(rememberFile),
   );
   await installLoaderProbe();
+  const rspackPackage = JSON.parse(await readFile(rspackPackagePath, 'utf8'));
+  console.log(`Rspack version: ${rspackPackage.version}`);
   console.log(`MDX loader: ${mdxLoaderPath}`);
 
   try {

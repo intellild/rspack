@@ -23,7 +23,7 @@
   "devDependencies": {
     "@rsbuild/plugin-sass": "catalog:",
     "@rsbuild/plugin-tailwindcss": "catalog:",
-    "@rspack/core": "workspace:*",
+    "@rspack/core": "2.2.0",
     "@rspress/core": "catalog:",
     "@rspress/plugin-algolia": "catalog:",
     "@rspress/plugin-client-redirects": "catalog:",
