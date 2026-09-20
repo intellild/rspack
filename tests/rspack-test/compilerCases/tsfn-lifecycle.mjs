@@ -38,6 +38,12 @@ function runChild(script) {
 /** @type {import('@rspack/test-tools').TCompilerCaseConfig[]} */
 export default [
   {
+    description: "should share JS task subscriptions and recreate them after compiler GC",
+    async build() {
+      await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "js-task-subscriptions.mjs"));
+    },
+  },
+  {
     description:
       "should garbage collect hook closures that capture both compilation and compiler",
     async build() {

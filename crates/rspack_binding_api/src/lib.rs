@@ -75,6 +75,7 @@ mod filename;
 mod fs_node;
 mod html;
 mod identifier;
+mod js_tasks;
 mod location;
 mod logging;
 mod module;
@@ -228,6 +229,7 @@ fn cleanup_revoked_modules(ctx: CallContext) -> Result<()> {
 
 #[napi(custom_finalize)]
 struct JsCompiler {
+  task_subscription: Arc<js_tasks::JsTaskSubscription>,
   // whether to skip drop compiler in finalize
   unsafe_fast_drop: bool,
   infrastructure_log_dispatcher: Arc<InfrastructureLogDispatcher>,
@@ -247,7 +249,7 @@ impl JsCompiler {
   #[allow(clippy::too_many_arguments)]
   #[napi(
     constructor,
-    ts_args_type = "compilerPath: string, options: RawOptions, builtinPlugins: BuiltinPlugin[], registerJsTaps: RegisterJsTaps, outputFilesystem: ThreadsafeNodeFS, intermediateFilesystem: ThreadsafeNodeFS | undefined | null, inputFilesystem: ThreadsafeNodeFS | undefined | null, resolverFactoryReference: JsResolverFactory, unsafeFastDrop: boolean, platform: RawCompilerPlatform, infrastructureLogCallback: (logs: JsLog[]) => void, cache: JsCache"
+    ts_args_type = "compilerPath: string, options: RawOptions, builtinPlugins: BuiltinPlugin[], registerJsTaps: RegisterJsTaps, outputFilesystem: ThreadsafeNodeFS, intermediateFilesystem: ThreadsafeNodeFS | undefined | null, inputFilesystem: ThreadsafeNodeFS | undefined | null, resolverFactoryReference: JsResolverFactory, unsafeFastDrop: boolean, platform: RawCompilerPlatform, infrastructureLogCallback: (logs: JsLog[]) => void, cache: JsCache, taskSubscription: ExternalObject<'JsTaskSubscription'>"
   )]
   pub fn new(
     env: Env,
@@ -264,7 +266,12 @@ impl JsCompiler {
     platform: RawCompilerPlatform,
     raw_infrastructure_log_callback: Unknown<'static>,
     cache: Reference<JsCache>,
+    task_subscription: &mut External<Option<Arc<js_tasks::JsTaskSubscription>>>,
   ) -> Result<Self> {
+    let task_subscription = task_subscription
+      .take()
+      .ok_or_else(|| napi::Error::from_reason("Expected an unused main JS task subscription"))?;
+
     tracing::info!(name:"rspack_version", version = rspack_workspace::rspack_pkg_version!());
 
     let compiler_scoped_tsfn_manager = CompilerScopedTsFnManager::new();
@@ -407,6 +414,7 @@ impl JsCompiler {
       );
 
       Ok(Self {
+        task_subscription,
         infrastructure_log_dispatcher,
         compiler_scoped_tsfn_manager,
         compiler: ManuallyDrop::new(Compiler::from(rspack)),

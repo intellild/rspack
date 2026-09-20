@@ -24,18 +24,65 @@ type TaskResult = (
   rspack_error::Result<()>,
 );
 
-pub(super) struct LoaderTask {
-  pub context: Box<LoaderContext<RunnerContext>>,
+pub(crate) struct LoaderTask {
+  context: Option<Box<LoaderContext<RunnerContext>>>,
   pub bridge_handle: Option<MainObjectHandle>,
   pub main_object_handle: u32,
   pub start: u32,
   pub end: u32,
-  pub result: oneshot::Sender<TaskResult>,
+  result: Option<oneshot::Sender<TaskResult>>,
 }
 
 impl LoaderTask {
-  fn finish(self, pitches: Vec<String>, result: rspack_error::Result<()>) {
-    let _ = self.result.send((self.context, pitches, result));
+  pub(crate) fn new(
+    context: Box<LoaderContext<RunnerContext>>,
+    main_object_handle: u32,
+    start: u32,
+    end: u32,
+    result: oneshot::Sender<TaskResult>,
+  ) -> Self {
+    Self {
+      context: Some(context),
+      bridge_handle: None,
+      main_object_handle,
+      start,
+      end,
+      result: Some(result),
+    }
+  }
+
+  pub(crate) fn context(&self) -> &LoaderContext<RunnerContext> {
+    self
+      .context
+      .as_deref()
+      .expect("unfinished loader task owns its context")
+  }
+
+  fn context_mut(&mut self) -> &mut LoaderContext<RunnerContext> {
+    self
+      .context
+      .as_deref_mut()
+      .expect("unfinished loader task owns its context")
+  }
+
+  pub(crate) fn finish(mut self, pitches: Vec<String>, result: rspack_error::Result<()>) {
+    if let (Some(context), Some(sender)) = (self.context.take(), self.result.take()) {
+      let _ = sender.send((context, pitches, result));
+    }
+  }
+}
+
+impl Drop for LoaderTask {
+  fn drop(&mut self) {
+    // Cancellation can drop a future before enqueue or N-API delivery. Always
+    // restore the owned state instead of only cancelling the result channel.
+    if let (Some(context), Some(sender)) = (self.context.take(), self.result.take()) {
+      let _ = sender.send((
+        context,
+        Vec::new(),
+        Err(rspack_error::error!("Loader task was cancelled")),
+      ));
+    }
   }
 }
 
@@ -49,7 +96,7 @@ struct WorkerSlot {
 static QUEUE: LazyLock<(Sender<LoaderTask>, Receiver<LoaderTask>)> =
   LazyLock::new(async_channel::unbounded);
 static NEXT_TASK: AtomicU32 = AtomicU32::new(1);
-type TaskCell = Arc<Mutex<Option<LoaderTask>>>;
+pub(crate) type TaskCell = Arc<Mutex<Option<LoaderTask>>>;
 static TASKS: LazyLock<Mutex<FxHashMap<u32, TaskCell>>> = LazyLock::new(Default::default);
 #[derive(Default)]
 struct ReceiveState {
@@ -134,6 +181,7 @@ pub struct JsLoaderTask {
   id: u32,
   task: TaskCell,
   context_taken: bool,
+  worker: bool,
   finished: bool,
 }
 
@@ -165,10 +213,12 @@ impl JsLoaderTask {
     let task = guard
       .as_mut()
       .ok_or_else(|| napi::Error::from_reason("Loader task has finished"))?;
-    let mut context = JsLoaderContext::try_from(task.context.as_mut())
+    let mut context = JsLoaderContext::try_from(task.context_mut())
       .map_err(|error| napi::Error::from_reason(error.to_string()))?;
     // Native-backed modules stay in the compiler isolate; workers use the RPC proxy.
-    context.module = None;
+    if self.worker {
+      context.module = None;
+    }
     context.loader_chain_start = task.start;
     context.loader_chain_end = task.end;
     context.bridge_handle = task.bridge_handle.as_ref().map(MainObjectHandle::handle);
@@ -187,11 +237,11 @@ impl JsLoaderTask {
     let pitches = context
       .loader_items
       .iter()
-      .zip(task.context.loader_items.iter())
+      .zip(task.context().loader_items.iter())
       .filter(|(js, _)| js.no_pitch)
       .map(|(_, native)| native.path().to_string())
       .collect();
-    let result = merge_loader_context(&mut task.context, context);
+    let result = merge_loader_context(task.context_mut(), context);
     self.finished = true;
     self.unregister();
     task.finish(pitches, result);
@@ -214,6 +264,58 @@ impl JsLoaderTask {
 }
 
 impl JsLoaderTask {
+  pub(crate) fn from_task(task: LoaderTask, worker: Option<u32>) -> Option<Self> {
+    let slot = match worker {
+      Some(id) => WORKERS
+        .lock()
+        .expect("loader workers lock poisoned")
+        .get(&id)
+        .cloned(),
+      None => Some(Arc::default()),
+    };
+    let Some(slot) = slot else {
+      task.finish(
+        Vec::new(),
+        Err(rspack_error::error!("Loader worker is unavailable")),
+      );
+      return None;
+    };
+    let mut active = slot.tasks.lock().expect("loader tasks lock poisoned");
+    if slot.stopped.load(Ordering::Acquire) {
+      task.finish(
+        Vec::new(),
+        Err(rspack_error::error!("Loader worker has exited")),
+      );
+      return None;
+    }
+    let id = NEXT_TASK.fetch_add(1, Ordering::Relaxed);
+    let task = Arc::new(Mutex::new(Some(task)));
+    active.insert(id, task.clone());
+    TASKS
+      .lock()
+      .expect("loader tasks lock poisoned")
+      .insert(id, task.clone());
+    drop(active);
+    Some(Self {
+      slot,
+      id,
+      task,
+      context_taken: false,
+      worker: worker.is_some(),
+      finished: false,
+    })
+  }
+
+  pub(crate) fn failure_handle(&self) -> TaskCell {
+    self.task.clone()
+  }
+
+  pub(crate) fn fail_handle(cell: TaskCell, error: String) {
+    if let Some(task) = cell.lock().expect("loader task lock poisoned").take() {
+      task.finish(Vec::new(), Err(rspack_error::error!(error)));
+    }
+  }
+
   fn unregister(&self) {
     self
       .slot
@@ -297,7 +399,7 @@ pub fn recv_worker_task(
       active.insert(id, task.clone());
       TASKS.lock().expect("loader tasks lock poisoned").insert(id, task.clone());
       Ok(Some(JsLoaderTask {
-        slot: slot.clone(), id, task, context_taken: false, finished: false,
+        slot: slot.clone(), id, task, context_taken: false, worker: true, finished: false,
       }))
     }.await;
     RECEIVERS
@@ -321,7 +423,7 @@ pub fn prepare_loader_task(id: u32) -> napi::Result<JsLoaderContext> {
   let task = guard
     .as_mut()
     .ok_or_else(|| napi::Error::from_reason("Loader task has finished"))?;
-  let mut context = JsLoaderContext::from_native(&mut task.context, true)
+  let mut context = JsLoaderContext::from_native(task.context_mut(), true)
     .map_err(|error| napi::Error::from_reason(error.to_string()))?;
   context.loader_chain_start = task.start;
   context.loader_chain_end = task.end;
@@ -345,7 +447,7 @@ pub fn complete_loader_task_hooks(id: u32, context: JsLoaderContext) -> napi::Re
   let task = guard
     .as_mut()
     .ok_or_else(|| napi::Error::from_reason("Loader task has finished"))?;
-  merge_loader_hooks(&mut task.context, context);
+  merge_loader_hooks(task.context_mut(), context);
   task.bridge_handle = Some(handle);
   Ok(())
 }

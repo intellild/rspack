@@ -46,6 +46,7 @@ import {
   ThreadsafeOutputNodeFS,
 } from './FileSystem';
 import type { FileSystemInfoEntry } from './FileSystemInfo';
+import { initializeMainTaskRunner } from './jsTasks';
 import type { rspack } from './index';
 import Cache from './lib/Cache';
 import CacheFacade from './lib/CacheFacade';
@@ -972,6 +973,7 @@ class Compiler {
     const compilerRef = new WeakRef(this);
 
     try {
+      initializeMainTaskRunner();
       this.#instance = new instanceBinding.JsCompiler(
         this.compilerPath,
         this.#rawOptions,
@@ -994,7 +996,11 @@ class Compiler {
           }
         },
         Cache.__to_binding(this.cache),
+        instanceBinding.getJsTaskSubscription(false),
       );
+      Object.defineProperty(this.#instance, '_getCompiler', {
+        value: () => compilerRef.deref(),
+      });
 
       callback(null, this.#instance);
     } catch (err) {

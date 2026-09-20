@@ -342,7 +342,7 @@ export declare class JsCompilation {
 }
 
 export declare class JsCompiler {
-  constructor(compilerPath: string, options: RawOptions, builtinPlugins: BuiltinPlugin[], registerJsTaps: RegisterJsTaps, outputFilesystem: ThreadsafeNodeFS, intermediateFilesystem: ThreadsafeNodeFS | undefined | null, inputFilesystem: ThreadsafeNodeFS | undefined | null, resolverFactoryReference: JsResolverFactory, unsafeFastDrop: boolean, platform: RawCompilerPlatform, infrastructureLogCallback: (logs: JsLog[]) => void, cache: JsCache)
+  constructor(compilerPath: string, options: RawOptions, builtinPlugins: BuiltinPlugin[], registerJsTaps: RegisterJsTaps, outputFilesystem: ThreadsafeNodeFS, intermediateFilesystem: ThreadsafeNodeFS | undefined | null, inputFilesystem: ThreadsafeNodeFS | undefined | null, resolverFactoryReference: JsResolverFactory, unsafeFastDrop: boolean, platform: RawCompilerPlatform, infrastructureLogCallback: (logs: JsLog[]) => void, cache: JsCache, taskSubscription: ExternalObject<'JsTaskSubscription'>)
   setNonSkippableRegisters(kinds: Array<RegisterJsTapKind>): void
   /** Build with the given option passed to the constructor */
   build(callback: (err: null | Error) => void): void
@@ -665,6 +665,12 @@ export declare enum EnforceExtension {
 export const EXPECTED_RSPACK_CORE_VERSION: string
 
 export declare function formatDiagnostic(diagnostic: JsDiagnostic): ExternalObject<'Diagnostic'>
+
+/**
+ * The returned holder transfers its strong reference to a JsCompiler. Worker
+ * registration is owned by the main subscription and returns an empty holder.
+ */
+export declare function getJsTaskSubscription(isWorker: boolean): ExternalObject<'JsTaskSubscription'>
 
 export interface JsAddingRuntimeModule {
   name: string
@@ -3390,6 +3396,9 @@ export interface RegisterJsTaps {
   registerRsdoctorPluginModuleSourcesTaps: (stages: Array<number>) => Array<{ function: ((arg: JsRsdoctorModuleSourcesPatch) => Promise<boolean | undefined>); stage: number; }>
   registerRsdoctorPluginAssetsTaps: (stages: Array<number>) => Array<{ function: ((arg: JsRsdoctorAssetPatch) => Promise<boolean | undefined>); stage: number; }>
 }
+
+/** Register one compiler-independent entry point in the current JS env. */
+export declare function registerJsTaskRunner(runner: (arg0: unknown, arg1: unknown) => void, workerId?: number | undefined | null): void
 
 export declare function registerLoaderReference(owner: number, ident: string, parallel: boolean): void
 

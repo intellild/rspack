@@ -70,52 +70,26 @@ pub(crate) async fn loader_yield(
   while end < chain.end() && parallel_at(end) == parallel {
     end += 1;
   }
+  let (tx, rx) = tokio::sync::oneshot::channel();
+  let task = LoaderTask::new(
+    loader_context.take_owned(),
+    self.main_object_handle,
+    start as u32,
+    end as u32,
+    tx,
+  );
   if parallel {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    dispatch(LoaderTask {
-      context: loader_context.take_owned(),
-      bridge_handle: None,
-      main_object_handle: self.main_object_handle,
-      start: start as u32,
-      end: end as u32,
-      result: tx,
-    })
-    .await;
-    // The queue/worker always returns the owned context, including worker exit.
-    let (context, pitches, result) = rx.await.expect("loader task must restore native state");
-    loader_context.restore_owned(*context);
-    if !pitches.is_empty() {
-      self.update_loaders_without_pitch(pitches).await;
-    }
-    result?;
+    dispatch(task).await;
   } else {
-    let runner = self.runner.lock().expect("should get lock").clone();
-    let runner = runner
-      .get_or_try_init(|| async {
-        #[allow(clippy::unwrap_used)]
-        let compiler_id = self.compiler_id.get().unwrap();
-        self.runner_getter.call(compiler_id).await
-      })
-      .await
-      .to_rspack_result()?;
-
-    let mut js_context = JsLoaderContext::try_from(&mut *loader_context)?;
-    js_context.loader_chain_start = start as u32;
-    js_context.loader_chain_end = end as u32;
-    let new_cx = runner
-      .call_async(js_context)
-      .await
-      .to_rspack_result()?
-      .await
-      .to_rspack_result()?;
-    if loader_context.state() == LoaderState::Pitching {
-      let list = collect_loaders_without_pitch(loader_context, &new_cx);
-      if !list.is_empty() {
-        self.update_loaders_without_pitch(list).await;
-      }
-    }
-    merge_loader_context(loader_context, new_cx)?;
+    crate::js_tasks::dispatch_main(crate::js_tasks::JsTask::Loader(task)).await;
   }
+  // Both queues always return the original state, including failed delivery.
+  let (context, pitches, result) = rx.await.expect("loader task must restore native state");
+  loader_context.restore_owned(*context);
+  if !pitches.is_empty() {
+    self.update_loaders_without_pitch(pitches).await;
+  }
+  result?;
 
   Ok(())
 }
@@ -208,17 +182,4 @@ pub(crate) fn merge_loader_context(
   );
 
   Ok(())
-}
-
-fn collect_loaders_without_pitch(
-  ctx: &LoaderContext<RunnerContext>,
-  js_ctx: &JsLoaderContext,
-) -> Vec<String> {
-  let mut list = Vec::new();
-  for (js_loader_item, loader_item) in js_ctx.loader_items.iter().zip(ctx.loader_items.iter()) {
-    if js_loader_item.no_pitch {
-      list.push(loader_item.path().to_string());
-    }
-  }
-  list
 }
