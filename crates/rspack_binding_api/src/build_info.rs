@@ -89,7 +89,7 @@ impl KnownBuildInfo {
     f: impl FnOnce(&dyn rspack_core::Module) -> napi::Result<T>,
   ) -> napi::Result<T> {
     match self.module_reference.get_mut() {
-      Some(reference) => reference.with_ref(|_, module| f(module)),
+      Some(reference) => reference.with_module_ref(f),
       None => Err(napi::Error::from_reason(
         "Unable to access buildInfo. The Module has been garbage collected by JavaScript."
           .to_string(),
@@ -135,7 +135,7 @@ impl BuildInfo {
     f: impl FnOnce(&dyn rspack_core::Module) -> napi::Result<T>,
   ) -> napi::Result<T> {
     match self.module_reference.get_mut() {
-      Some(reference) => reference.with_ref(|_, module| f(module)),
+      Some(reference) => reference.with_module_ref(f),
       None => Err(napi::Error::from_reason(
         "Unable to access buildInfo. The Module has been garbage collected by JavaScript."
           .to_string(),

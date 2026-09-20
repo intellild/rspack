@@ -30,7 +30,7 @@ impl NormalModule {
     env: &napi::Env,
   ) -> napi::Result<napi::bindgen_prelude::ClassInstance<'_, Self>> {
     let (resource, request, user_request, raw_request, resource_resolve_data, loaders) = self
-      .with_ref(|_, module| {
+      .with_module_ref(|module| {
         let resource_resolved_data = module.resource_resolved_data();
         let resource = env.create_string(resource_resolved_data.resource())?;
         let request = env.create_string(module.request())?;
@@ -69,7 +69,7 @@ impl NormalModule {
       let env = ctx.env.raw();
       let wrapped_value = unsafe { NormalModule::from_napi_mut_ref(env, this.raw())? };
 
-      wrapped_value.with_ref(|_, module| {
+      wrapped_value.with_module_ref(|module| {
         Ok(match module.match_resource() {
           Some(match_resource) => Either::A(ctx.env.create_string(match_resource.resource())?),
           None => Either::B(()),
@@ -175,6 +175,21 @@ impl NormalModule {
       .module
       .with_ref(|compilation, module| match module.as_normal_module() {
         Some(normal_module) => f(compilation, normal_module),
+        None => Err(napi::Error::new(
+          napi::Status::GenericFailure,
+          "Module is not a NormalModule",
+        )),
+      })
+  }
+
+  fn with_module_ref<R>(
+    &mut self,
+    f: impl FnOnce(&rspack_core::NormalModule) -> napi::Result<R>,
+  ) -> napi::Result<R> {
+    self
+      .module
+      .with_module_ref(|module| match module.as_normal_module() {
+        Some(normal_module) => f(normal_module),
         None => Err(napi::Error::new(
           napi::Status::GenericFailure,
           "Module is not a NormalModule",

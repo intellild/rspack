@@ -71,7 +71,7 @@ pub(crate) trait DerivedModule {
 fn module_context_getter(ctx: CallContext) -> napi::Result<Either<String, ()>> {
   let this = ctx.this_unchecked::<JsObject>();
   let wrapped_value = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
-  wrapped_value.with_ref(|_, module| {
+  wrapped_value.with_module_ref(|module| {
     Ok(match module.get_context() {
       Some(ctx) => Either::A(ctx.to_string()),
       None => Either::B(()),
@@ -84,7 +84,7 @@ fn module_layer_getter(ctx: CallContext<'_>) -> napi::Result<Either<JsString<'_>
   let this = ctx.this_unchecked::<JsObject>();
   let env = ctx.env;
   let wrapped_value = unsafe { Module::from_napi_mut_ref(env.raw(), this.raw())? };
-  wrapped_value.with_ref(|_, module| {
+  wrapped_value.with_module_ref(|module| {
     Ok(match module.get_layer() {
       Some(layer) => Either::A(env.create_string(layer)?),
       None => Either::B(()),
@@ -96,21 +96,21 @@ fn module_layer_getter(ctx: CallContext<'_>) -> napi::Result<Either<JsString<'_>
 fn module_use_source_map_getter(ctx: CallContext) -> napi::Result<bool> {
   let this = ctx.this_unchecked::<JsObject>();
   let wrapped_value = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
-  wrapped_value.with_ref(|_, module| Ok(module.get_source_map_kind().source_map()))
+  wrapped_value.with_module_ref(|module| Ok(module.get_source_map_kind().source_map()))
 }
 
 #[js_function]
 fn module_use_simple_source_map_getter(ctx: CallContext) -> napi::Result<bool> {
   let this = ctx.this_unchecked::<JsObject>();
   let wrapped_value = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
-  wrapped_value.with_ref(|_, module| Ok(module.get_source_map_kind().simple_source_map()))
+  wrapped_value.with_module_ref(|module| Ok(module.get_source_map_kind().simple_source_map()))
 }
 
 #[js_function]
 fn module_factory_meta_getter(ctx: CallContext) -> napi::Result<JsFactoryMeta> {
   let this = ctx.this_unchecked::<JsObject>();
   let wrapped_value = unsafe { Module::from_napi_mut_ref(ctx.env.raw(), this.raw())? };
-  wrapped_value.with_ref(|_, module| {
+  wrapped_value.with_module_ref(|module| {
     Ok(match module.as_normal_module() {
       Some(normal_module) => match normal_module.factory_meta() {
         Some(meta) => JsFactoryMeta {
@@ -209,7 +209,7 @@ pub(crate) fn define_module_properties(
   object: &mut Object,
   properties: &mut Vec<Property>,
 ) -> napi::Result<()> {
-  instance.as_module().with_ref(|_, module| {
+  instance.as_module().with_module_ref(|module| {
     properties.push(
       Property::new()
         .with_utf8_name("type")?
@@ -375,6 +375,30 @@ impl Module {
     })
   }
 
+  /// Access that does not depend on the compilation graph. Keep this separate
+  /// from `with_ref` so loader-owned modules can also be read in a worker env.
+  pub(crate) fn with_module_ref<R>(
+    &self,
+    f: impl FnOnce(&dyn rspack_core::Module) -> napi::Result<R>,
+  ) -> napi::Result<R> {
+    self.with_optional_module_ref(|module| f(module.ok_or_else(|| self.module_removed_error())?))
+  }
+
+  fn with_optional_module_ref<R>(
+    &self,
+    f: impl FnOnce(Option<&dyn rspack_core::Module>) -> napi::Result<R>,
+  ) -> napi::Result<R> {
+    self.with_compilation(|compilation| {
+      if let Some(module) = compilation.module_by_identifier(&self.identifier) {
+        f(Some(module.as_ref()))
+      } else {
+        // SAFETY: direct pointers are valid only within the supplying hook or
+        // loader's execution window, as in `with_ref`.
+        f(self.ptr.map(|ptr| unsafe { ptr.as_ref() }))
+      }
+    })
+  }
+
   pub(crate) fn as_mut(&mut self) -> napi::Result<&'static mut dyn rspack_core::Module> {
     match self.ptr.as_mut() {
       Some(ptr) => {
@@ -410,35 +434,11 @@ impl Module {
     enumerable = false
   )]
   pub fn original_source<'a>(&mut self, env: &'a Env) -> napi::Result<Either<Unknown<'a>, ()>> {
-    let compiler_reference = COMPILER_REFERENCES.with(|ref_cell| {
-      let references = ref_cell.borrow();
-      references.get(&self.compiler_id).cloned()
-    });
-
-    let compilation = {
-      let Some(this) = compiler_reference
-        .as_ref()
-        .and_then(|compiler_reference| compiler_reference.get())
-      else {
-        return Err(self.compiler_garbage_collected_error());
-      };
-      &this.compiler.compilation
-    };
-
-    let module = {
-      if let Some(module) = compilation.module_by_identifier(&self.identifier) {
-        module.as_ref()
-      } else if let Some(ptr) = self.ptr {
-        // SAFETY:
-        // We need to make users aware in the documentation that values obtained within the JS hook callback should not be used outside the scope of the callback.
-        // We do not guarantee that the memory pointed to by the pointer remains valid when used outside the scope.
-        unsafe { ptr.as_ref() }
-      } else {
-        return Ok(Either::B(()));
-      }
-    };
-
-    let Some(original_source) = module.source() else {
+    // This temporary Arc lets the cache be updated without borrowing the module
+    // across N-API conversion. The cache itself still holds only a Weak source.
+    let Some(original_source) = self
+      .with_optional_module_ref(|module| Ok(module.and_then(|module| module.source().cloned())))?
+    else {
       self.original_source_ref = None;
       return Ok(Either::B(()));
     };
@@ -447,16 +447,16 @@ impl Module {
       related_source,
       napi_ref,
     }) = &self.original_source_ref
-      && (related_source.ptr_eq(&Arc::downgrade(original_source)))
+      && (related_source.ptr_eq(&Arc::downgrade(&original_source)))
     {
       return Ok(Either::A(ToNapiValue::into_unknown(napi_ref, env)?));
     }
 
-    let binding = JsSourceToJs::try_from(original_source)?;
+    let binding = JsSourceToJs::try_from(&original_source)?;
     let mut one_shot_ref = OneShotRef::new(env.raw(), binding)?;
     let result = ToNapiValue::into_unknown(&mut one_shot_ref, env)?;
     self.original_source_ref = Some(OriginalSourceNapiRef {
-      related_source: Arc::downgrade(original_source),
+      related_source: Arc::downgrade(&original_source),
       napi_ref: one_shot_ref,
     });
 
@@ -465,7 +465,7 @@ impl Module {
 
   #[napi]
   pub fn name_for_condition(&mut self) -> napi::Result<Either<String, ()>> {
-    self.with_ref(|_, module| {
+    self.with_module_ref(|module| {
       Ok(match module.name_for_condition() {
         Some(s) => Either::A(s.to_string()),
         None => Either::B(()),
@@ -539,7 +539,7 @@ impl Module {
     env: &'a Env,
     options: JsLibIdentOptions,
   ) -> napi::Result<Option<JsString<'a>>> {
-    self.with_ref(|_, module| {
+    self.with_module_ref(|module| {
       Ok(
         match module.lib_ident(LibIdentOptions {
           context: &options.context,
