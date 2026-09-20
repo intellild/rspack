@@ -67,6 +67,7 @@ const remoteRoots = new WeakSet<object>();
 const compilerHandles = new WeakMap<Compiler, number>();
 const compilerIds = new Set<number>();
 const referenceVersions = new WeakMap<Compiler, number>();
+const parallelCompilers = new WeakSet<Compiler>();
 
 const workerOptions = new Map<
   number,
@@ -169,6 +170,7 @@ export function getCompilerHandle(compiler: Compiler): number {
   compilerIds.add(handle);
   compilerFinalizer.register(compiler, handle, compiler);
   const id = handle;
+  const compilerRef = new WeakRef(compiler);
   compiler.hooks.shutdown.tap('rspack:loader-objects', () => {
     releaseMainObject(id);
     releaseLoaderReferences(id);
@@ -176,7 +178,12 @@ export function getCompilerHandle(compiler: Compiler): number {
   compiler.hooks.make.tapPromise(
     { name: 'rspack:loader-workers', stage: -Infinity },
     async () => {
-      await startNativeLoaderWorkers();
+      // Dynamic Rule.use functions may enable workers later during make.
+      compiling = true;
+      const compiler = compilerRef.deref();
+      if (compiler && parallelCompilers.has(compiler)) {
+        await startNativeLoaderWorkers();
+      }
     },
   );
   return handle;
@@ -188,8 +195,13 @@ export function registerParallelLoader(
   parallel: boolean | { maxWorkers?: number } | undefined,
 ): void {
   referenceVersions.set(compiler, (referenceVersions.get(compiler) ?? 0) + 1);
-  registerLoaderReference(getCompilerHandle(compiler), ident, !!parallel);
-  if (parallel && !IS_BROWSER && !process.env.WASM) {
+  const useWorker = registerLoaderReference(
+    getCompilerHandle(compiler),
+    ident,
+    !!parallel,
+  );
+  if (useWorker && !IS_BROWSER && !process.env.WASM) {
+    parallelCompilers.add(compiler);
     ensureNativeLoaderWorkers(
       typeof parallel === 'object' ? parallel : undefined,
     );

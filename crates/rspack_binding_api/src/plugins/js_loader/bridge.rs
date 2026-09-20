@@ -107,13 +107,14 @@ pub fn register_main_object_release(env: Env, release: ReleaseCallback) -> napi:
 }
 
 #[napi]
-pub fn register_loader_reference(owner: u32, ident: String, parallel: bool) {
+pub fn register_loader_reference(owner: u32, ident: String, parallel: bool) -> bool {
   REFERENCES
     .lock()
     .expect("loader references lock poisoned")
     .entry(owner)
     .or_default()
     .insert(ident, parallel);
+  parallel && !cfg!(target_family = "wasm")
 }
 
 #[napi]

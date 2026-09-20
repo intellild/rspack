@@ -3400,7 +3400,7 @@ export interface RegisterJsTaps {
 /** Register one compiler-independent entry point in the current JS env. */
 export declare function registerJsTaskRunner(runner: (arg0: unknown, arg1: unknown) => void, workerId?: number | undefined | null): void
 
-export declare function registerLoaderReference(owner: number, ident: string, parallel: boolean): void
+export declare function registerLoaderReference(owner: number, ident: string, parallel: boolean): boolean
 
 export declare function registerLoaderWorker(id: number): void
 

@@ -7,6 +7,7 @@ import { closeCompiler, runCompiler } from "./helpers.mjs";
 
 const cases = path.resolve(import.meta.dirname, "../../../configCases/loader-parallel");
 const output = createFsFromVolume(new Volume());
+const workerCount = process.argv.includes("--single") ? 1 : 2;
 async function build(entry, loader, parallel) {
   const compiler = rspack({
     mode: "development",
@@ -25,14 +26,14 @@ async function build(entry, loader, parallel) {
 // This process owns its pool, so other test compilers cannot set its size or
 // have their active work interrupted by the deliberate worker crash below.
 const entry = path.join(import.meta.dirname, "parallel-distribution-entry.cjs");
-let stats = await build(entry, path.join(cases, "worker-concurrency/loader.js"), { maxWorkers: 2 });
+let stats = await build(entry, path.join(cases, "worker-concurrency/loader.js"), { maxWorkers: workerCount });
 assert.equal(stats.hasErrors(), false, stats.toString());
 const context = { module: { exports: {} } };
 vm.runInNewContext(output.readFileSync("/bundle.js", "utf8"), context);
-assert.equal(new Set(context.module.exports).size, 2);
+assert.equal(new Set(context.module.exports).size, workerCount);
 assert.ok(context.module.exports.every(id => id > 0));
 
-stats = await build(path.join(import.meta.dirname, "parallel-crash-resource.js"), path.join(import.meta.dirname, "parallel-crash-loader.cjs"), true);
+stats = await build([path.join(import.meta.dirname, "parallel-crash-resource.js"), entry], path.join(import.meta.dirname, "parallel-crash-loader.cjs"), true);
 assert.equal(stats.hasErrors(), true);
 assert.match(stats.toString(), /Parallel loader (worker exited|task was abandoned)/);
 

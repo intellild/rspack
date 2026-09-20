@@ -134,12 +134,20 @@ pub(super) async fn dispatch(task: LoaderTask) {
 }
 
 #[napi]
-pub fn register_loader_worker(id: u32) {
+pub fn register_loader_worker(id: u32) -> napi::Result<()> {
+  // The WASI binding instantiates its own memory in each Node worker. Those
+  // workers cannot consume this instance's native task queue.
+  if cfg!(target_family = "wasm") {
+    return Err(napi::Error::from_reason(
+      "Rule.use.parallel requires the native Rspack binding; separate WASI instances do not share the JS task queue",
+    ));
+  }
   WORKERS
     .lock()
     .expect("loader workers lock poisoned")
     .entry(id)
     .or_default();
+  Ok(())
 }
 
 /// Called only after Node reports worker exit: no JS can still access its context.

@@ -20,6 +20,7 @@ function createCompiler(name) {
     },
   });
   compiler.outputFileSystem = createFsFromVolume(new Volume());
+  compiler.unsafeFastDrop = process.argv.includes("--unsafe-fast-drop");
   tracker.track(compiler, name);
   return compiler;
 }

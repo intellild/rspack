@@ -38,6 +38,36 @@ function runChild(script, args = []) {
 /** @type {import('@rspack/test-tools').TCompilerCaseConfig[]} */
 export default [
   {
+    description: "should recover queued loader tasks after the only worker exits",
+    async build() {
+      await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "parallel-loader-dispatch.mjs"), ["--single"]);
+    },
+  },
+  {
+    description: "should release transferred task subscriptions when native compiler construction fails",
+    async build() {
+      await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "js-task-constructor-failure.mjs"));
+    },
+  },
+  {
+    description: "should release shared subscriptions and worker registrations with their final owner",
+    async build() {
+      await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "js-task-subscription-api.mjs"));
+    },
+  },
+  {
+    description: "should release task subscriptions with unsafeFastDrop",
+    async build() {
+      await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "js-task-subscriptions.mjs"), ["--parallel", "--unsafe-fast-drop"]);
+    },
+  },
+  {
+    description: "should isolate loader worker startup failures from main-only compilers",
+    async build() {
+      await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "worker-startup-failure.mjs"));
+    },
+  },
+  {
     description: "should recreate worker subscriptions after all compilers are collected",
     async build() {
       await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "js-task-subscriptions.mjs"), ["--parallel"]);
