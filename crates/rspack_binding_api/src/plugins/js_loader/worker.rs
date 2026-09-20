@@ -9,7 +9,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rspack_collections::Identifiable;
 use rspack_core::{CompilerId, LoaderContext, ModuleIdentifier, RunnerContext};
-use rspack_js_tasks::{LoaderTask as NativeLoaderTask, js_task_dispatcher};
+use rspack_js_tasks::{LoaderTask as NativeLoaderTask, TimingPoint, js_task_dispatcher};
 use rustc_hash::FxHashMap;
 
 use super::{
@@ -56,6 +56,9 @@ impl ActiveLoaderTask {
 
   fn finish(mut self, pitches: Vec<String>, result: rspack_error::Result<()>) {
     self.revoke();
+    if let Some(timing) = &self.native().timing {
+      timing.mark(TimingPoint::Returned);
+    }
     self
       .native
       .take()
@@ -168,6 +171,9 @@ impl JsLoaderTask {
     let task = guard
       .as_mut()
       .ok_or_else(|| napi::Error::from_reason("Loader task has finished"))?;
+    if let Some(timing) = &task.native().timing {
+      timing.mark(TimingPoint::ContextStarted);
+    }
     let mut context = JsLoaderContext::try_from(task.context_mut())
       .map_err(|error| napi::Error::from_reason(error.to_string()))?;
     if self.worker {
@@ -183,6 +189,9 @@ impl JsLoaderTask {
     context.loader_chain_end = task.native().end;
     context.bridge_handle = task.bridge_handle.as_ref().map(MainObjectHandle::handle);
     self.context_taken = true;
+    if let Some(timing) = &task.native().timing {
+      timing.mark(TimingPoint::ContextPrepared);
+    }
     Ok(context)
   }
 
@@ -194,6 +203,9 @@ impl JsLoaderTask {
       .expect("loader task lock poisoned")
       .take()
       .ok_or_else(|| napi::Error::from_reason("Loader task has finished"))?;
+    if let Some(timing) = &task.native().timing {
+      timing.mark(TimingPoint::CompleteEntered);
+    }
     let pitches = context
       .loader_items
       .iter()
@@ -259,6 +271,9 @@ impl JsLoaderTask {
       return None;
     }
     let id = NEXT_TASK.fetch_add(1, Ordering::Relaxed);
+    if let Some(timing) = &task.native().timing {
+      timing.identify(id, worker);
+    }
     let task = Arc::new(Mutex::new(Some(task)));
     active.insert(id, task.clone());
     TASKS

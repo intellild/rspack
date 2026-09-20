@@ -4469,6 +4469,7 @@ version = "0.102.5"
 dependencies = [
  "async-channel",
  "rspack_error",
+ "serde_json",
  "tokio",
  "tokio-util",
 ]

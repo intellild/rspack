@@ -5,7 +5,7 @@ use std::{
 
 use dashmap::DashMap;
 use napi::{Env, sys};
-use rspack_js_tasks::{MainTaskRegistration, js_task_dispatcher};
+use rspack_js_tasks::{MainTaskRegistration, TimingPoint, js_task_dispatcher};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -98,6 +98,7 @@ impl JsTaskSubscription {
           _ = &mut changed => continue,
           task = receiver.recv() => task,
         };
+        task.mark_timing(TimingPoint::Received);
         if cancel.is_cancelled() {
           task.fail("JS task subscription has closed");
           break;

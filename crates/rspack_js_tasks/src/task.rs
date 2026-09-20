@@ -1,13 +1,16 @@
-use std::any::Any;
+use std::{any::Any, sync::Arc};
 
 use rspack_error::{Result, error};
 use tokio::sync::oneshot;
+
+use crate::{LoaderTaskTiming, TimingPoint};
 
 /// The original allocation travels through the queue and back without copying.
 /// Type erasure keeps the queue independent of the loader runner's context type.
 pub type LoaderTaskResult = (Box<dyn Any + Send>, Vec<String>, Result<()>);
 
 pub struct LoaderTask {
+  pub timing: Option<Arc<LoaderTaskTiming>>,
   context: Option<Box<dyn Any + Send>>,
   pub main_object_handle: u32,
   pub start: u32,
@@ -24,6 +27,7 @@ impl LoaderTask {
     result: oneshot::Sender<LoaderTaskResult>,
   ) -> Self {
     Self {
+      timing: None,
       context: Some(context),
       main_object_handle,
       start,
@@ -74,6 +78,16 @@ pub enum JsTask {
 }
 
 impl JsTask {
+  pub fn mark_timing(&self, point: TimingPoint) {
+    match self {
+      Self::Loader(task) => {
+        if let Some(timing) = &task.timing {
+          timing.mark(point);
+        }
+      }
+    }
+  }
+
   pub fn fail(self, message: &str) {
     match self {
       Self::Loader(task) => task.finish(Vec::new(), Err(error!("{message}"))),

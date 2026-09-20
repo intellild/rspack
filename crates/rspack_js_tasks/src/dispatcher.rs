@@ -6,7 +6,7 @@ use std::{
 use async_channel::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 
-use crate::JsTask;
+use crate::{JsTask, TimingPoint};
 
 static JS_TASK_DISPATCHER: LazyLock<JsTaskDispatcher> = LazyLock::new(JsTaskDispatcher::new);
 
@@ -26,6 +26,7 @@ impl TaskQueue {
   }
 
   fn dispatch(&self, task: JsTask) {
+    task.mark_timing(TimingPoint::Enqueued);
     if let Err(error) = self.sender.try_send(task) {
       error.into_inner().fail("JS task queue is closed");
     }

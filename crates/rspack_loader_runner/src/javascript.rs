@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use rspack_error::{Result, error};
-use rspack_js_tasks::{JsTask, LoaderTask, js_task_dispatcher};
+use rspack_js_tasks::{JsTask, LoaderTask, LoaderTaskTiming, js_task_dispatcher};
 use rustc_hash::{FxHashMap, FxHashSet};
 use tokio::sync::oneshot;
 
@@ -94,13 +94,25 @@ impl<Context: Send + 'static> LoaderContext<Context> {
       (start, end, parallel)
     };
     let (tx, rx) = oneshot::channel();
-    let task = JsTask::Loader(LoaderTask::new(
+    let timing = LoaderTaskTiming::new(
+      self.resource(),
+      self.current_loader().path().as_str(),
+      if self.state() == State::Pitching {
+        "pitch"
+      } else {
+        "normal"
+      },
+      parallel,
+    );
+    let mut task = LoaderTask::new(
       self.take_owned(),
       runtime.main_object_handle,
       start as u32,
       end as u32,
       tx,
-    ));
+    );
+    task.timing = timing.clone();
+    let task = JsTask::Loader(task);
     if parallel {
       js_task_dispatcher().dispatch_worker(task);
     } else {
@@ -117,6 +129,9 @@ impl<Context: Send + 'static> LoaderContext<Context> {
         .lock()
         .expect("loader pitch cache lock poisoned")
         .extend(pitches);
+    }
+    if let Some(timing) = timing {
+      timing.finish(result.is_ok());
     }
     result?;
     Ok(true)
