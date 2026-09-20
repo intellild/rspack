@@ -231,6 +231,7 @@ export async function runLoaders(
   compiler: Compiler,
   context: JsLoaderContext,
   extensions?: Record<string, unknown>,
+  workerModule?: JsLoaderContext['_module'],
 ): Promise<JsLoaderContext> {
   const module = context._module!;
   const loaderState = context.loaderState;
@@ -698,7 +699,7 @@ export async function runLoaders(
 
   loaderContext._compiler = compiler;
   loaderContext._compilation = compiler._lastCompilation!;
-  loaderContext._module = module;
+  loaderContext._module = workerModule ?? module;
 
   loaderContext.getOptions = () => {
     const loader = getCurrentLoader(loaderContext);
@@ -778,12 +779,17 @@ export async function runLoaders(
       )
         custom[key] = descriptor.value;
     }
-    context.bridgeHandle = registerLoaderContext(compiler, module, custom);
+    context.bridgeHandle = registerLoaderContext(
+      compiler,
+      module.buildInfo,
+      custom,
+    );
     context.addedDependencies = dependencies.added;
     context.removedDependencies = dependencies.removed;
     return context;
   }
   if (extensions) Object.assign(loaderContext, extensions);
+  if (workerModule) loaderContext._module = workerModule;
 
   const isomorphoicRun = async (fn: Function, args: any[]) => {
     const currentLoaderObject = getCurrentLoader(loaderContext);

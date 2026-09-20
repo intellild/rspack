@@ -35,7 +35,10 @@ pub fn register_js_task_runner(
       return Ok(());
     }
     let runner = runner.create_ref()?;
-    env.add_env_cleanup_hook((), |_| {
+    env.add_env_cleanup_hook((), move |_| {
+      if worker_id.is_some() {
+        crate::module::ModuleObject::cleanup_worker_env();
+      }
       RUNNER.with(|slot| slot.borrow_mut().take());
       LOCAL_SUBSCRIPTION.with(|slot| slot.replace(Weak::new()));
     })?;

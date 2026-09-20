@@ -7,7 +7,8 @@ use std::sync::{
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use rspack_core::{LoaderContext, RunnerContext};
+use rspack_collections::Identifiable;
+use rspack_core::{CompilerId, LoaderContext, ModuleIdentifier, RunnerContext};
 use rustc_hash::FxHashMap;
 use tokio::sync::oneshot;
 
@@ -16,6 +17,7 @@ use super::{
   bridge::MainObjectHandle,
   scheduler::{merge_loader_context, merge_loader_hooks},
 };
+use crate::module::{ModuleObject, WorkerModuleScope};
 
 type TaskResult = (
   Box<LoaderContext<RunnerContext>>,
@@ -25,6 +27,7 @@ type TaskResult = (
 
 pub(crate) struct LoaderTask {
   permit: Option<crate::js_tasks::TaskPermit>,
+  module_scope: Option<Arc<WorkerModuleScope>>,
   context: Option<Box<LoaderContext<RunnerContext>>>,
   pub bridge_handle: Option<MainObjectHandle>,
   pub main_object_handle: u32,
@@ -43,6 +46,7 @@ impl LoaderTask {
   ) -> Self {
     Self {
       permit: None,
+      module_scope: None,
       context: Some(context),
       bridge_handle: None,
       main_object_handle,
@@ -71,6 +75,9 @@ impl LoaderTask {
   }
 
   pub(crate) fn finish(mut self, pitches: Vec<String>, result: rspack_error::Result<()>) {
+    if let Some(scope) = &self.module_scope {
+      scope.revoke();
+    }
     if let (Some(context), Some(sender)) = (self.context.take(), self.result.take()) {
       let _ = sender.send((context, pitches, result));
     }
@@ -79,6 +86,9 @@ impl LoaderTask {
 
 impl Drop for LoaderTask {
   fn drop(&mut self) {
+    if let Some(scope) = &self.module_scope {
+      scope.revoke();
+    }
     // Cancellation can drop a future before enqueue or N-API delivery. Always
     // restore the owned state instead of only cancelling the result channel.
     if let (Some(context), Some(sender)) = (self.context.take(), self.result.take()) {
@@ -175,6 +185,7 @@ pub struct JsLoaderTask {
   task: TaskCell,
   context_taken: bool,
   worker: bool,
+  module: Option<(CompilerId, ModuleIdentifier)>,
   finished: bool,
 }
 
@@ -208,9 +219,14 @@ impl JsLoaderTask {
       .ok_or_else(|| napi::Error::from_reason("Loader task has finished"))?;
     let mut context = JsLoaderContext::try_from(task.context_mut())
       .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-    // Native-backed modules stay in the compiler isolate; workers use the RPC proxy.
     if self.worker {
-      context.module = None;
+      let native = &task.context().context;
+      let scope = WorkerModuleScope::new(native.options.context.clone());
+      self.module = Some((native.compiler_id, native.module.identifier()));
+      context.module = context
+        .module
+        .map(|module| module.with_worker_scope(scope.clone()));
+      task.module_scope = Some(scope);
     }
     context.loader_chain_start = task.start;
     context.loader_chain_end = task.end;
@@ -295,6 +311,7 @@ impl JsLoaderTask {
       task,
       context_taken: false,
       worker: worker.is_some(),
+      module: None,
       finished: false,
     })
   }
@@ -309,7 +326,10 @@ impl JsLoaderTask {
     }
   }
 
-  fn unregister(&self) {
+  fn unregister(&mut self) {
+    if let Some((compiler_id, module_id)) = self.module.take() {
+      ModuleObject::cleanup_by_module_identifiers(&compiler_id, &[module_id]);
+    }
     self
       .slot
       .tasks

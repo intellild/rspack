@@ -3,7 +3,10 @@ use std::{
   any::TypeId,
   cell::RefCell,
   ptr::NonNull,
-  sync::{Arc, Weak},
+  sync::{
+    Arc, Weak,
+    atomic::{AtomicBool, Ordering},
+  },
 };
 
 use napi::{CallContext, JsObject, JsString, JsSymbol, NapiRaw};
@@ -11,7 +14,7 @@ use napi_derive::napi;
 use rspack_collections::{Identifier, IdentifierMap};
 use rspack_core::{
   BindingCell, BuildMeta, BuildMetaDefaultObject, BuildMetaExportsType, Compilation, CompilerId,
-  FactoryMeta, LibIdentOptions, Module as _, ModuleIdentifier, RuntimeModuleCommon,
+  Context, FactoryMeta, LibIdentOptions, Module as _, ModuleIdentifier, RuntimeModuleCommon,
   RuntimeModuleStage, SourceType, internal, rspack_sources::Source,
 };
 use rspack_napi::{
@@ -293,11 +296,41 @@ struct OriginalSourceNapiRef {
   napi_ref: OneShotRef,
 }
 
+/// Worker wrappers borrow a task-owned module only until completion. This
+/// contains native data exclusively; every JS env creates its own wrapper.
+pub(crate) struct WorkerModuleScope {
+  active: AtomicBool,
+  context: Context,
+}
+
+impl WorkerModuleScope {
+  pub(crate) fn new(context: Context) -> Arc<Self> {
+    Arc::new(Self {
+      active: AtomicBool::new(true),
+      context,
+    })
+  }
+
+  pub(crate) fn revoke(&self) {
+    self.active.store(false, Ordering::Release);
+  }
+
+  fn validate(&self) -> napi::Result<()> {
+    if !self.active.load(Ordering::Acquire) {
+      return Err(napi::Error::from_reason(
+        "Worker Module is unavailable after its loader task has completed",
+      ));
+    }
+    Ok(())
+  }
+}
+
 #[napi]
 pub struct Module {
   pub(crate) identifier: ModuleIdentifier,
   ptr: Option<NonNull<dyn rspack_core::Module>>,
   compiler_id: CompilerId,
+  worker_scope: Option<Arc<WorkerModuleScope>>,
   original_source_ref: Option<OriginalSourceNapiRef>,
   pub(crate) build_info_ref: Option<WeakRef>,
 }
@@ -340,6 +373,12 @@ impl Module {
     &self,
     f: impl FnOnce(&Compilation) -> napi::Result<R>,
   ) -> napi::Result<R> {
+    if let Some(scope) = &self.worker_scope {
+      scope.validate()?;
+      return Err(napi::Error::from_reason(
+        "This Module API requires the main-thread compilation and is unavailable in a parallel loader",
+      ));
+    }
     let compiler_reference = COMPILER_REFERENCES.with(|ref_cell| {
       let references = ref_cell.borrow();
       references.get(&self.compiler_id).cloned()
@@ -388,6 +427,12 @@ impl Module {
     &self,
     f: impl FnOnce(Option<&dyn rspack_core::Module>) -> napi::Result<R>,
   ) -> napi::Result<R> {
+    if let Some(scope) = &self.worker_scope {
+      scope.validate()?;
+      // SAFETY: the task owns this module until it revokes the scope, before
+      // returning the boxed context to Rust. All JS accesses run in its env.
+      return f(self.ptr.map(|ptr| unsafe { ptr.as_ref() }));
+    }
     self.with_compilation(|compilation| {
       if let Some(module) = compilation.module_by_identifier(&self.identifier) {
         f(Some(module.as_ref()))
@@ -400,6 +445,9 @@ impl Module {
   }
 
   pub(crate) fn as_mut(&mut self) -> napi::Result<&'static mut dyn rspack_core::Module> {
+    if let Some(scope) = &self.worker_scope {
+      scope.validate()?;
+    }
     match self.ptr.as_mut() {
       Some(ptr) => {
         // SAFETY:
@@ -419,6 +467,10 @@ impl Module {
 impl Module {
   #[napi]
   pub fn readable_identifier(&mut self) -> napi::Result<String> {
+    if let Some(scope) = &self.worker_scope {
+      return self
+        .with_module_ref(|module| Ok(module.readable_identifier(&scope.context).to_string()));
+    }
     self.with_ref(|compilation, module| {
       Ok(
         module
@@ -527,6 +579,12 @@ impl Module {
 
   #[napi]
   pub fn size(&mut self, ty: Option<String>) -> napi::Result<f64> {
+    if self.worker_scope.is_some() {
+      return self.with_module_ref(|module| {
+        let ty = ty.map(|s| SourceType::from(s.as_str()));
+        Ok(module.size(ty.as_ref(), None))
+      });
+    }
     self.with_ref(|compilation, module| {
       let ty = ty.map(|s| SourceType::from(s.as_str()));
       Ok(module.size(ty.as_ref(), Some(compilation)))
@@ -563,7 +621,7 @@ impl Module {
     source: JsSourceFromJs,
     object: Option<Object>,
   ) -> napi::Result<()> {
-    let module = self.as_mut()?;
+    let is_worker = self.worker_scope.is_some();
 
     let asset_info = match object {
       Some(object) => {
@@ -571,16 +629,22 @@ impl Module {
           unsafe { FromNapiValue::from_napi_value(env.raw(), object.raw())? };
         let info: rspack_core::AssetInfo = js_info.into();
         let info = BindingCell::from(info);
-        info.reflector().set_jsobject(env, object)?;
+        // A BindingCell reflector remembers one env. Worker-created native
+        // assets return to main, where their JS view will be materialized.
+        if !is_worker {
+          info.reflector().set_jsobject(env, object)?;
+        }
         info
       }
       None => Default::default(),
     };
 
+    let source = source.try_into()?;
+    let module = self.as_mut()?;
     module.build_info_mut().assets.insert(
       filename,
       rspack_core::CompilationAsset {
-        source: Some(source.try_into()?),
+        source: Some(source),
         info: asset_info,
       },
     );
@@ -624,12 +688,14 @@ thread_local! {
 // ModuleObject maintains a cache to ensure that the corresponding instance of the same Module is unique on the JS side.
 //
 // This means that when transferring a Module from Rust to JS, you must use ModuleObject instead.
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct ModuleObject {
   type_id: TypeId,
   identifier: ModuleIdentifier,
   ptr: Option<NonNull<dyn rspack_core::Module>>,
   compiler_id: CompilerId,
+  #[debug(skip)]
+  worker_scope: Option<Arc<WorkerModuleScope>>,
 }
 
 unsafe impl Send for ModuleObject {}
@@ -642,6 +708,7 @@ impl ModuleObject {
       identifier: module.identifier(),
       ptr: None,
       compiler_id,
+      worker_scope: None,
     }
   }
 
@@ -653,7 +720,17 @@ impl ModuleObject {
       identifier: module.identifier(),
       ptr: Some(module_ptr),
       compiler_id,
+      worker_scope: None,
     }
+  }
+
+  pub(crate) fn with_worker_scope(mut self, scope: Arc<WorkerModuleScope>) -> Self {
+    self.worker_scope = Some(scope);
+    self
+  }
+
+  pub(crate) fn cleanup_worker_env() {
+    MODULE_INSTANCE_REFS.with(|refs| refs.borrow_mut().clear());
   }
 
   pub fn cleanup_by_compiler_id(compiler_id: &CompilerId) {
@@ -681,6 +758,12 @@ impl ModuleObject {
             Either5::E(mut module) => module.ptr = None,
           }
         }
+      }
+      if refs_by_compiler_id
+        .get(compiler_id)
+        .is_some_and(|refs| refs.is_empty())
+      {
+        refs_by_compiler_id.remove(compiler_id);
       }
     });
   }
@@ -715,6 +798,7 @@ impl ToNapiValue for ModuleObject {
               Either5::E(module) => &mut **module,
             };
             instance.ptr = val.ptr;
+            instance.worker_scope = val.worker_scope;
             match instance_ref {
               Either5::A(r) => ToNapiValue::to_napi_value(env, r),
               Either5::B(r) => ToNapiValue::to_napi_value(env, r),
@@ -728,6 +812,7 @@ impl ToNapiValue for ModuleObject {
               identifier: val.identifier,
               compiler_id: val.compiler_id,
               ptr: val.ptr,
+              worker_scope: val.worker_scope,
               original_source_ref: None,
               build_info_ref: Default::default(),
             };
@@ -787,30 +872,35 @@ impl FromNapiValue for ModuleObject {
           identifier: normal_module.module.identifier,
           ptr: normal_module.module.ptr,
           compiler_id: normal_module.module.compiler_id,
+          worker_scope: normal_module.module.worker_scope.clone(),
         },
         Either5::B(concatenated_module) => Self {
           type_id: TypeId::of::<rspack_core::ConcatenatedModule>(),
           identifier: concatenated_module.module.identifier,
           ptr: concatenated_module.module.ptr,
           compiler_id: concatenated_module.module.compiler_id,
+          worker_scope: concatenated_module.module.worker_scope.clone(),
         },
         Either5::C(context_module) => Self {
           type_id: TypeId::of::<rspack_core::ContextModule>(),
           identifier: context_module.module.identifier,
           ptr: context_module.module.ptr,
           compiler_id: context_module.module.compiler_id,
+          worker_scope: context_module.module.worker_scope.clone(),
         },
         Either5::D(external_module) => Self {
           type_id: TypeId::of::<rspack_core::ExternalModule>(),
           identifier: external_module.module.identifier,
           ptr: external_module.module.ptr,
           compiler_id: external_module.module.compiler_id,
+          worker_scope: external_module.module.worker_scope.clone(),
         },
         Either5::E(module) => Self {
           type_id: TypeId::of::<dyn rspack_core::Module>(),
           identifier: module.identifier,
           ptr: module.ptr,
           compiler_id: module.compiler_id,
+          worker_scope: module.worker_scope.clone(),
         },
       })
     }

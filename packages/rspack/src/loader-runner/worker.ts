@@ -12,6 +12,7 @@ import {
   type JsLoaderTask,
 } from '@rspack/binding';
 import { runLoaders } from '.';
+import { createWorkerModule } from './workerModule';
 import {
   type WorkerLoaderContext,
   prepareWorkerTask,
@@ -26,24 +27,25 @@ let activeTasks = 0;
 
 async function execute(task: JsLoaderTask): Promise<void> {
   activeTasks++;
+  let module: ReturnType<typeof createWorkerModule> | undefined;
   try {
     await prepareWorkerTask(task.mainObjectHandle, task.id);
     const context = task.takeContext();
     const main = getMainObject<WorkerLoaderContext>(context.bridgeHandle!);
-    const nativeModule = context._module;
-    context._module = main.module;
+    module = createWorkerModule(context._module!, main.buildInfo);
     const result = await runLoaders(
       createWorkerCompiler(main),
       context,
       main.extensions,
+      module.module,
     );
-    result._module = nativeModule;
     task.complete(result);
   } catch (error) {
     task.fail(
       error instanceof Error ? (error.stack ?? error.message) : String(error),
     );
   } finally {
+    module?.dispose();
     if (--activeTasks === 0) clearWorkerLoaderContext();
   }
 }

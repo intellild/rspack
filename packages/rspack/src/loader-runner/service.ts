@@ -9,7 +9,7 @@ import {
   releaseLoaderReferences,
   stopLoaderWorker,
 } from '@rspack/binding';
-import type { JsLoaderContext } from '@rspack/binding';
+import type { BuildInfo } from '@rspack/binding';
 import type { Compiler } from '../Compiler';
 import { runLoaders } from '.';
 
@@ -81,7 +81,7 @@ export interface WorkerLoaderContext {
   compilerHandle: number;
   referenceVersion: number;
   compiler: Compiler;
-  module: JsLoaderContext['_module'];
+  buildInfo: BuildInfo;
   extensions: Record<string, unknown>;
 }
 
@@ -199,12 +199,12 @@ export function registerParallelLoader(
 /** A task-scoped bridge keeps native-backed objects on the compiler's JS thread. */
 export function registerLoaderContext(
   compiler: Compiler,
-  module: object,
+  buildInfo: BuildInfo,
   extensions: object,
 ): number {
   const compilation = compiler._lastCompilation!;
   remoteRoots.add(compilation);
-  remoteRoots.add(module);
+  remoteRoots.add(buildInfo);
   remoteRoots.add(compiler.inputFileSystem!);
   const compilerRef = new WeakRef(compiler);
   const handle = registerMainObject({
@@ -230,7 +230,7 @@ export function registerLoaderContext(
       __internal__takeModuleExecutionResult: (id: number) =>
         compilerRef.deref()!.__internal__takeModuleExecutionResult(id),
     },
-    module,
+    buildInfo,
     extensions,
   });
   taskHandles.add(handle);

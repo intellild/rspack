@@ -897,7 +897,9 @@ export default {
 :::tip
 
 - loader 选项必须是对象。选项可以包含函数，函数在主线程执行。
-- compilation 和 module API 通过代理访问主线程实现，loader hook 也在主线程执行。`additionalData` 经过并行 loader 和 builtin loader 时，会保留主线程上的对象身份。
+- compiler 和 compilation API 通过代理访问主线程实现，loader hook 也在主线程执行。`additionalData` 经过并行 loader 和 builtin loader 时，会保留主线程上的对象身份。
+- `_module` 提供由 worker 本地 native module 支持的受限 API，包括 resource 和 request 属性、`identifier()`、`readableIdentifier()`、`nameForCondition()`、`originalSource()`、`size()`、`libIdent()`、`factoryMeta`、`matchResource` 和 `emitFile()`。不提供 `blocks`、`dependencies`、`error` 等依赖 compilation 的 API。仅在 loader 执行期间使用此对象。
+- `buildInfo`（包括自定义字段和 assets 查询）继续通过主线程对象桥访问。worker emit 的文件直接保存在 native module 中，供 compilation 后续使用。
 
 :::
 
