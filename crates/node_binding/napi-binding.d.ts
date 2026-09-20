@@ -3404,7 +3404,7 @@ export declare function registerLoaderReference(owner: number, ident: string, pa
 
 export declare function registerLoaderWorker(id: number): void
 
-export declare function registerMainObjectRelease(release: ((arg: number) => void)): void
+export declare function registerMainObjectRelease(release: (value: number) => void): void
 
 export declare function releaseLoaderReferences(owner: number): void
 

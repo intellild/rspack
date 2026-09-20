@@ -159,6 +159,12 @@ export default [
     },
   },
   {
+    description: "should release additionalData after the main object owner env is recreated",
+    async build() {
+      await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "main-env-recreation.mjs"));
+    },
+  },
+  {
     description: "should distribute native loader tasks and recover from worker exit",
     async build() {
       await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "parallel-loader-dispatch.mjs"));

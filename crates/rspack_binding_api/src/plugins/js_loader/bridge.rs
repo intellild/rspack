@@ -1,25 +1,38 @@
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use napi::{
-  Status,
+  Env, Status,
   threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
 use napi_derive::napi;
 use rustc_hash::FxHashMap;
 
-static RELEASE: OnceLock<Arc<ThreadsafeFunction<u32, (), u32, Status, false, true, 0>>> =
-  OnceLock::new();
+type ReleaseCallback = ThreadsafeFunction<u32, (), u32, Status, false, true, 0>;
+
+// The env owns its route until cleanup. Handles retain that exact route, so an
+// old handle can never release the same numeric ID in a replacement env.
+static RELEASE: Mutex<Weak<MainObjectRelease>> = Mutex::new(Weak::new());
+
+struct MainObjectRelease {
+  callback: Mutex<Option<ReleaseCallback>>,
+}
 
 struct MainObjectHandleInner {
   handle: u32,
-  release: Arc<ThreadsafeFunction<u32, (), u32, Status, false, true, 0>>,
+  release: Arc<MainObjectRelease>,
 }
 
 impl Drop for MainObjectHandleInner {
   fn drop(&mut self) {
-    self
+    if let Some(callback) = self
       .release
-      .call(self.handle, ThreadsafeFunctionCallMode::NonBlocking);
+      .callback
+      .lock()
+      .expect("main object release lock poisoned")
+      .as_ref()
+    {
+      callback.call(self.handle, ThreadsafeFunctionCallMode::NonBlocking);
+    }
   }
 }
 
@@ -32,18 +45,15 @@ pub struct MainObjectHandle {
 }
 
 impl MainObjectHandle {
-  pub fn register_release(release: ThreadsafeFunction<u32, (), u32, Status, false, true, 0>) {
-    let _ = RELEASE.set(Arc::new(release));
-  }
-
   pub fn new(handle: u32) -> Self {
     Self {
       inner: Arc::new(MainObjectHandleInner {
         handle,
         release: RELEASE
-          .get()
-          .expect("main-thread JS value release callback should be registered")
-          .clone(),
+          .lock()
+          .expect("main object release lock poisoned")
+          .upgrade()
+          .expect("main-thread JS value release callback should be registered"),
       }),
     }
   }
@@ -56,11 +66,44 @@ impl MainObjectHandle {
 static REFERENCES: LazyLock<Mutex<FxHashMap<u32, FxHashMap<String, bool>>>> =
   LazyLock::new(Default::default);
 
-#[napi]
-pub fn register_main_object_release(
-  release: ThreadsafeFunction<u32, (), u32, Status, false, true, 0>,
-) {
-  MainObjectHandle::register_release(release);
+#[napi(ts_args_type = "release: (value: number) => void")]
+pub fn register_main_object_release(env: Env, release: ReleaseCallback) -> napi::Result<()> {
+  let mut global = RELEASE.lock().expect("main object release lock poisoned");
+  if let Some(current) = global.upgrade()
+    && current
+      .callback
+      .lock()
+      .expect("main object release lock poisoned")
+      .is_some()
+  {
+    return Err(napi::Error::from_reason(
+      "Main object release callback already belongs to a live JS env",
+    ));
+  }
+  let route = Arc::new(MainObjectRelease {
+    callback: Mutex::new(Some(release)),
+  });
+  env.add_env_cleanup_hook(route.clone(), |route| {
+    // Serialize with handle Drop before releasing the TSFN. The route remains
+    // inert even if Rust-owned handles outlive this JS env.
+    let callback = route
+      .callback
+      .lock()
+      .expect("main object release lock poisoned")
+      .take();
+    let mut global = RELEASE.lock().expect("main object release lock poisoned");
+    if global.ptr_eq(&Arc::downgrade(&route)) {
+      *global = Weak::new();
+      REFERENCES
+        .lock()
+        .expect("loader references lock poisoned")
+        .clear();
+    }
+    drop(global);
+    drop(callback);
+  })?;
+  *global = Arc::downgrade(&route);
+  Ok(())
 }
 
 #[napi]
