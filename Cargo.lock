@@ -4027,7 +4027,6 @@ name = "rspack_binding_api"
 version = "0.102.5"
 dependencies = [
  "anyhow",
- "async-channel",
  "async-trait",
  "atomic_refcell",
  "cow-utils",
@@ -4054,6 +4053,7 @@ dependencies = [
  "rspack_ids",
  "rspack_intern",
  "rspack_javascript_compiler",
+ "rspack_js_tasks",
  "rspack_loader_lightningcss",
  "rspack_loader_preact_refresh",
  "rspack_loader_react_refresh",
@@ -4464,6 +4464,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rspack_js_tasks"
+version = "0.102.5"
+dependencies = [
+ "async-channel",
+ "rspack_error",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "rspack_loader_lightningcss"
 version = "0.102.5"
 dependencies = [
@@ -4524,6 +4534,7 @@ dependencies = [
  "rspack_error",
  "rspack_fs",
  "rspack_hash",
+ "rspack_js_tasks",
  "rspack_paths",
  "rspack_sources",
  "rspack_util",

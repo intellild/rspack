@@ -1,4 +1,4 @@
-//! Native loader work is moved between the scheduler and JS isolates. No N-API
+//! Native loader work is moved between the loader runner and JS isolates. No N-API
 //! value is constructed until a worker takes a task's context.
 use std::sync::{
   Arc, LazyLock, Mutex,
@@ -9,95 +9,65 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rspack_collections::Identifiable;
 use rspack_core::{CompilerId, LoaderContext, ModuleIdentifier, RunnerContext};
+use rspack_js_tasks::{LoaderTask as NativeLoaderTask, js_task_dispatcher};
 use rustc_hash::FxHashMap;
-use tokio::sync::oneshot;
 
 use super::{
   JsLoaderContext,
   bridge::MainObjectHandle,
-  scheduler::{merge_loader_context, merge_loader_hooks},
+  result::{merge_loader_context, merge_loader_hooks},
 };
 use crate::module::{ModuleObject, WorkerModuleScope};
 
-type TaskResult = (
-  Box<LoaderContext<RunnerContext>>,
-  Vec<String>,
-  rspack_error::Result<()>,
-);
-
-pub(crate) struct LoaderTask {
-  permit: Option<crate::js_tasks::TaskPermit>,
+// Resources acquired in a JS environment stay in binding, outside the queue's
+// native task protocol. Revoke the module scope before returning native state.
+pub(crate) struct ActiveLoaderTask {
+  native: Option<NativeLoaderTask>,
+  _permit: Option<crate::js_tasks::TaskPermit>,
   module_scope: Option<Arc<WorkerModuleScope>>,
-  context: Option<Box<LoaderContext<RunnerContext>>>,
-  pub bridge_handle: Option<MainObjectHandle>,
-  pub main_object_handle: u32,
-  pub start: u32,
-  pub end: u32,
-  result: Option<oneshot::Sender<TaskResult>>,
+  bridge_handle: Option<MainObjectHandle>,
 }
 
-impl LoaderTask {
-  pub(crate) fn new(
-    context: Box<LoaderContext<RunnerContext>>,
-    main_object_handle: u32,
-    start: u32,
-    end: u32,
-    result: oneshot::Sender<TaskResult>,
-  ) -> Self {
-    Self {
-      permit: None,
-      module_scope: None,
-      context: Some(context),
-      bridge_handle: None,
-      main_object_handle,
-      start,
-      end,
-      result: Some(result),
-    }
-  }
-
-  pub(crate) fn set_permit(&mut self, permit: Option<crate::js_tasks::TaskPermit>) {
-    self.permit = permit;
-  }
-
-  pub(crate) fn context(&self) -> &LoaderContext<RunnerContext> {
+impl ActiveLoaderTask {
+  fn native(&self) -> &NativeLoaderTask {
     self
-      .context
-      .as_deref()
-      .expect("unfinished loader task owns its context")
+      .native
+      .as_ref()
+      .expect("unfinished task owns native state")
+  }
+
+  fn context(&self) -> &LoaderContext<RunnerContext> {
+    self.native().context()
   }
 
   fn context_mut(&mut self) -> &mut LoaderContext<RunnerContext> {
     self
-      .context
-      .as_deref_mut()
-      .expect("unfinished loader task owns its context")
+      .native
+      .as_mut()
+      .expect("unfinished task owns native state")
+      .context_mut()
   }
 
-  pub(crate) fn finish(mut self, pitches: Vec<String>, result: rspack_error::Result<()>) {
+  fn revoke(&self) {
     if let Some(scope) = &self.module_scope {
       scope.revoke();
     }
-    if let (Some(context), Some(sender)) = (self.context.take(), self.result.take()) {
-      let _ = sender.send((context, pitches, result));
-    }
+  }
+
+  fn finish(mut self, pitches: Vec<String>, result: rspack_error::Result<()>) {
+    self.revoke();
+    self
+      .native
+      .take()
+      .expect("unfinished task owns native state")
+      .finish(pitches, result);
   }
 }
 
-impl Drop for LoaderTask {
+impl Drop for ActiveLoaderTask {
   fn drop(&mut self) {
-    if let Some(scope) = &self.module_scope {
-      scope.revoke();
-    }
-    // Cancellation can drop a future before enqueue or N-API delivery. Always
-    // restore the owned state instead of only cancelling the result channel.
-    if let (Some(context), Some(sender)) = (self.context.take(), self.result.take()) {
-      let _ = sender.send((
-        context,
-        Vec::new(),
-        Err(rspack_error::error!("Loader task was cancelled")),
-      ));
-    }
+    self.revoke();
+    // NativeLoaderTask::drop returns the context after this revoke.
   }
 }
 
@@ -108,30 +78,9 @@ struct WorkerSlot {
 }
 
 static NEXT_TASK: AtomicU32 = AtomicU32::new(1);
-pub(crate) type TaskCell = Arc<Mutex<Option<LoaderTask>>>;
+pub(crate) type TaskCell = Arc<Mutex<Option<ActiveLoaderTask>>>;
 static TASKS: LazyLock<Mutex<FxHashMap<u32, TaskCell>>> = LazyLock::new(Default::default);
 static WORKERS: LazyLock<Mutex<FxHashMap<u32, Arc<WorkerSlot>>>> = LazyLock::new(Default::default);
-
-pub(super) async fn dispatch(task: LoaderTask) {
-  let workers = WORKERS.lock().expect("loader workers lock poisoned");
-  if workers.is_empty() {
-    task.finish(
-      Vec::new(),
-      Err(rspack_error::error!(
-        "No parallel loader workers are available"
-      )),
-    );
-    return;
-  }
-  // The unbounded channel never waits for capacity. Keep registration and
-  // enqueue atomic with respect to retiring the last worker.
-  if let Err(error) = crate::js_tasks::JS_TASK_DISPATCHER
-    .worker_sender
-    .try_send(crate::js_tasks::JsTask::Loader(task))
-  {
-    error.into_inner().fail("Parallel loader queue is closed");
-  }
-}
 
 #[napi]
 pub fn register_loader_worker(id: u32) -> napi::Result<()> {
@@ -147,25 +96,18 @@ pub fn register_loader_worker(id: u32) -> napi::Result<()> {
     .expect("loader workers lock poisoned")
     .entry(id)
     .or_default();
+  js_task_dispatcher().register_worker(id);
   Ok(())
 }
 
 /// Called only after Node reports worker exit: no JS can still access its context.
 #[napi]
 pub fn stop_loader_worker(id: u32) {
-  let mut workers = WORKERS.lock().expect("loader workers lock poisoned");
-  let slot = workers.remove(&id);
-  // Dispatch and replacement registration use the same lock. Drain before a
-  // newly registered consumer can enqueue work into the permanent channel.
-  if workers.is_empty() {
-    while let Ok(task) = crate::js_tasks::JS_TASK_DISPATCHER
-      .worker_receiver
-      .try_recv()
-    {
-      task.fail("No parallel loader workers are available");
-    }
-  }
-  drop(workers);
+  js_task_dispatcher().stop_worker(id);
+  let slot = WORKERS
+    .lock()
+    .expect("loader workers lock poisoned")
+    .remove(&id);
   if let Some(slot) = slot {
     slot.stopped.store(true, Ordering::Release);
     let tasks = std::mem::take(&mut *slot.tasks.lock().expect("loader tasks lock poisoned"));
@@ -210,6 +152,7 @@ impl JsLoaderTask {
       guard
         .as_ref()
         .ok_or_else(|| napi::Error::from_reason("Loader task has finished"))?
+        .native()
         .main_object_handle,
     )
   }
@@ -236,8 +179,8 @@ impl JsLoaderTask {
         .map(|module| module.with_worker_scope(scope.clone()));
       task.module_scope = Some(scope);
     }
-    context.loader_chain_start = task.start;
-    context.loader_chain_end = task.end;
+    context.loader_chain_start = task.native().start;
+    context.loader_chain_end = task.native().end;
     context.bridge_handle = task.bridge_handle.as_ref().map(MainObjectHandle::handle);
     self.context_taken = true;
     Ok(context)
@@ -281,7 +224,17 @@ impl JsLoaderTask {
 }
 
 impl JsLoaderTask {
-  pub(crate) fn from_task(task: LoaderTask, worker: Option<u32>) -> Option<Self> {
+  pub(crate) fn from_task(
+    task: NativeLoaderTask,
+    worker: Option<u32>,
+    permit: Option<crate::js_tasks::TaskPermit>,
+  ) -> Option<Self> {
+    let task = ActiveLoaderTask {
+      native: Some(task),
+      _permit: permit,
+      module_scope: None,
+      bridge_handle: None,
+    };
     let slot = match worker {
       Some(id) => WORKERS
         .lock()
@@ -380,8 +333,8 @@ pub fn prepare_loader_task(id: u32) -> napi::Result<JsLoaderContext> {
     .ok_or_else(|| napi::Error::from_reason("Loader task has finished"))?;
   let mut context = JsLoaderContext::from_native(task.context_mut(), true)
     .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-  context.loader_chain_start = task.start;
-  context.loader_chain_end = task.end;
+  context.loader_chain_start = task.native().start;
+  context.loader_chain_end = task.native().end;
   Ok(context)
 }
 

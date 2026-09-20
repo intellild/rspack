@@ -5,6 +5,7 @@ use napi::{
   threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
 use napi_derive::napi;
+use rspack_loader_runner::JsLoaderRuntime;
 use rustc_hash::FxHashMap;
 
 type ReleaseCallback = ThreadsafeFunction<u32, (), u32, Status, false, true, 0>;
@@ -63,7 +64,7 @@ impl MainObjectHandle {
   }
 }
 
-static REFERENCES: LazyLock<Mutex<FxHashMap<u32, FxHashMap<String, bool>>>> =
+static REFERENCES: LazyLock<Mutex<FxHashMap<u32, Arc<JsLoaderRuntime>>>> =
   LazyLock::new(Default::default);
 
 #[napi(ts_args_type = "release: (value: number) => void")]
@@ -108,13 +109,9 @@ pub fn register_main_object_release(env: Env, release: ReleaseCallback) -> napi:
 
 #[napi]
 pub fn register_loader_reference(owner: u32, ident: String, parallel: bool) -> bool {
-  REFERENCES
-    .lock()
-    .expect("loader references lock poisoned")
-    .entry(owner)
-    .or_default()
-    .insert(ident, parallel);
-  parallel && !cfg!(target_family = "wasm")
+  let parallel = parallel && !cfg!(target_family = "wasm");
+  loader_runtime(owner).register_loader(ident, parallel);
+  parallel
 }
 
 #[napi]
@@ -125,15 +122,11 @@ pub fn release_loader_references(owner: u32) {
     .remove(&owner);
 }
 
-pub(super) fn is_parallel(owner: u32, query: Option<&str>) -> bool {
-  let Some(ident) = query.and_then(|q| q.strip_prefix("??")) else {
-    return false;
-  };
+pub(super) fn loader_runtime(owner: u32) -> Arc<JsLoaderRuntime> {
   REFERENCES
     .lock()
     .expect("loader references lock poisoned")
-    .get(&owner)
-    .and_then(|references| references.get(ident))
-    .copied()
-    .unwrap_or(false)
+    .entry(owner)
+    .or_insert_with(|| Arc::new(JsLoaderRuntime::new(owner)))
+    .clone()
 }

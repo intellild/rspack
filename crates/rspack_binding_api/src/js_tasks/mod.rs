@@ -1,7 +1,5 @@
 mod capacity;
-mod dispatcher;
 mod subscription;
-mod task;
 mod tsfn;
 
 use std::{
@@ -10,10 +8,8 @@ use std::{
 };
 
 pub(crate) use capacity::TaskPermit;
-pub(crate) use dispatcher::{JS_TASK_DISPATCHER, dispatch_main};
 use napi::bindgen_prelude::*;
 pub(crate) use subscription::{JsTaskSubscription, MAIN_TASK_SUBSCRIPTION};
-pub(crate) use task::JsTask;
 
 type TaskRunner = FunctionRef<FnArgs<(Unknown<'static>, Unknown<'static>)>, ()>;
 

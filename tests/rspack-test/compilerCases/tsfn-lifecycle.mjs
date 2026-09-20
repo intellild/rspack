@@ -38,6 +38,12 @@ function runChild(script, args = []) {
 /** @type {import('@rspack/test-tools').TCompilerCaseConfig[]} */
 export default [
   {
+    description: "should finish queued loader tasks when dynamic worker startup fails",
+    async build() {
+      await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "worker-startup-failure.mjs"), ["--dynamic"]);
+    },
+  },
+  {
     description: "should recover queued loader tasks after the only worker exits",
     async build() {
       await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "parallel-loader-dispatch.mjs"), ["--single"]);

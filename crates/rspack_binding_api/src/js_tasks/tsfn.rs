@@ -1,13 +1,15 @@
 use std::{ffi::c_void, ptr, sync::Mutex};
 
 use napi::{bindgen_prelude::*, sys};
+use rspack_core::{LoaderContext, RunnerContext};
+use rspack_js_tasks::JsTask;
 use tokio_util::sync::CancellationToken;
 
-use super::task::JsTask;
 use crate::{COMPILER_REFERENCES, plugins::js_loader::worker::JsLoaderTask};
 
 pub(super) struct Delivery {
   pub task: JsTask,
+  pub permit: Option<super::TaskPermit>,
   pub worker: Option<u32>,
   pub cancel: CancellationToken,
 }
@@ -99,6 +101,7 @@ extern "C" fn call_js(
 ) {
   let Delivery {
     task,
+    permit,
     worker,
     cancel,
   } = *unsafe { Box::<Delivery>::from_raw(data.cast()) };
@@ -109,7 +112,10 @@ extern "C" fn call_js(
   let env = unsafe { Env::from_raw(raw_env) };
   match task {
     JsTask::Loader(task) => {
-      let compiler_id = task.context().context.compiler_id;
+      let compiler_id = task
+        .context::<LoaderContext<RunnerContext>>()
+        .context
+        .compiler_id;
       let compiler = if worker.is_some() {
         unsafe { ToNapiValue::to_napi_value(raw_env, ()) }
       } else {
@@ -135,7 +141,7 @@ extern "C" fn call_js(
           return;
         }
       };
-      let task = match JsLoaderTask::from_task(task, worker) {
+      let task = match JsLoaderTask::from_task(task, worker, permit) {
         Some(task) => task,
         None => return,
       };

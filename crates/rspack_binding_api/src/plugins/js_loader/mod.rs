@@ -1,31 +1,50 @@
 mod bridge;
 mod context;
 mod resolver;
-mod scheduler;
+mod result;
 pub(crate) mod worker;
 
-use std::fmt::Debug;
+use std::{
+  fmt::Debug,
+  sync::{Arc, LazyLock, Mutex, Weak},
+};
 
 pub use context::{JsLoaderContext, JsLoaderDependencies, JsLoaderItem};
-use rspack_core::{Compilation, CompilationParams, CompilerThisCompilation, Plugin};
+use rspack_core::{Compilation, CompilationParams, CompilerId, CompilerThisCompilation, Plugin};
 use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
-use rustc_hash::FxHashSet;
-use tokio::sync::RwLock;
+use rspack_loader_runner::JsLoaderRuntime;
+use rustc_hash::FxHashMap;
+
+static RUNTIMES: LazyLock<Mutex<FxHashMap<CompilerId, Weak<JsLoaderRuntime>>>> =
+  LazyLock::new(Default::default);
+
+pub(crate) fn release_runtime(compiler_id: CompilerId) {
+  RUNTIMES
+    .lock()
+    .expect("loader runtimes lock poisoned")
+    .remove(&compiler_id);
+}
+
+fn runtime(compiler_id: CompilerId) -> Option<Arc<JsLoaderRuntime>> {
+  RUNTIMES
+    .lock()
+    .expect("loader runtimes lock poisoned")
+    .get(&compiler_id)
+    .and_then(Weak::upgrade)
+}
 
 #[plugin]
 pub(crate) struct JsLoaderRspackPlugin {
-  pub(crate) main_object_handle: u32,
+  pub(crate) runtime: Arc<JsLoaderRuntime>,
   pub(crate) resolved_loaders: resolver::LoaderResolveCache,
-  pub(crate) loaders_without_pitch: RwLock<FxHashSet<String>>,
 }
 
 impl JsLoaderRspackPlugin {
   pub fn new(main_object_handle: u32) -> Self {
     Self::new_inner(
-      main_object_handle,
+      bridge::loader_runtime(main_object_handle),
       Default::default(),
-      RwLock::new(FxHashSet::default()),
     )
   }
 }
@@ -39,9 +58,13 @@ impl Debug for JsLoaderRspackPlugin {
 #[plugin_hook(CompilerThisCompilation for JsLoaderRspackPlugin)]
 async fn this_compilation(
   &self,
-  _compilation: &mut Compilation,
+  compilation: &mut Compilation,
   _params: &mut CompilationParams,
 ) -> Result<()> {
+  RUNTIMES
+    .lock()
+    .expect("loader runtimes lock poisoned")
+    .insert(compilation.compiler_id(), Arc::downgrade(&self.runtime));
   self
     .resolved_loaders
     .lock()
@@ -65,11 +88,6 @@ impl Plugin for JsLoaderRspackPlugin {
       .normal_module_factory_hooks
       .resolve_loader
       .tap(resolver::resolve_loader::new(self));
-
-    ctx
-      .normal_module_hooks
-      .loader_yield
-      .tap(scheduler::loader_yield::new(self));
 
     Ok(())
   }
