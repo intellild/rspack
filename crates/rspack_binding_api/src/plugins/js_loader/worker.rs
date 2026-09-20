@@ -5,12 +5,11 @@ use std::sync::{
   atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-use async_channel::{Receiver, Sender};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rspack_core::{LoaderContext, RunnerContext};
 use rustc_hash::FxHashMap;
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::oneshot;
 
 use super::{
   JsLoaderContext,
@@ -25,6 +24,7 @@ type TaskResult = (
 );
 
 pub(crate) struct LoaderTask {
+  permit: Option<crate::js_tasks::TaskPermit>,
   context: Option<Box<LoaderContext<RunnerContext>>>,
   pub bridge_handle: Option<MainObjectHandle>,
   pub main_object_handle: u32,
@@ -42,6 +42,7 @@ impl LoaderTask {
     result: oneshot::Sender<TaskResult>,
   ) -> Self {
     Self {
+      permit: None,
       context: Some(context),
       bridge_handle: None,
       main_object_handle,
@@ -49,6 +50,10 @@ impl LoaderTask {
       end,
       result: Some(result),
     }
+  }
+
+  pub(crate) fn set_permit(&mut self, permit: Option<crate::js_tasks::TaskPermit>) {
+    self.permit = permit;
   }
 
   pub(crate) fn context(&self) -> &LoaderContext<RunnerContext> {
@@ -89,22 +94,12 @@ impl Drop for LoaderTask {
 #[derive(Default)]
 struct WorkerSlot {
   stopped: AtomicBool,
-  notify: Notify,
   tasks: Mutex<FxHashMap<u32, TaskCell>>,
 }
 
-static QUEUE: LazyLock<(Sender<LoaderTask>, Receiver<LoaderTask>)> =
-  LazyLock::new(async_channel::unbounded);
 static NEXT_TASK: AtomicU32 = AtomicU32::new(1);
 pub(crate) type TaskCell = Arc<Mutex<Option<LoaderTask>>>;
 static TASKS: LazyLock<Mutex<FxHashMap<u32, TaskCell>>> = LazyLock::new(Default::default);
-#[derive(Default)]
-struct ReceiveState {
-  cancelled: AtomicBool,
-  notify: Notify,
-}
-type ReceiverMap = FxHashMap<(u32, u32), Arc<ReceiveState>>;
-static RECEIVERS: LazyLock<Mutex<ReceiverMap>> = LazyLock::new(Default::default);
 static WORKERS: LazyLock<Mutex<FxHashMap<u32, Arc<WorkerSlot>>>> = LazyLock::new(Default::default);
 
 pub(super) async fn dispatch(task: LoaderTask) {
@@ -120,11 +115,11 @@ pub(super) async fn dispatch(task: LoaderTask) {
   }
   // The unbounded channel never waits for capacity. Keep registration and
   // enqueue atomic with respect to retiring the last worker.
-  if let Err(error) = QUEUE.0.try_send(task) {
-    error.into_inner().finish(
-      Vec::new(),
-      Err(rspack_error::error!("Parallel loader queue is closed")),
-    );
+  if let Err(error) = crate::js_tasks::JS_TASK_DISPATCHER
+    .worker_sender
+    .try_send(crate::js_tasks::JsTask::Loader(task))
+  {
+    error.into_inner().fail("Parallel loader queue is closed");
   }
 }
 
@@ -133,20 +128,28 @@ pub fn register_loader_worker(id: u32) {
   WORKERS
     .lock()
     .expect("loader workers lock poisoned")
-    .insert(id, Arc::default());
+    .entry(id)
+    .or_default();
 }
 
 /// Called only after Node reports worker exit: no JS can still access its context.
 #[napi]
 pub fn stop_loader_worker(id: u32) {
-  let (slot, empty) = {
-    let mut workers = WORKERS.lock().expect("loader workers lock poisoned");
-    let slot = workers.remove(&id);
-    (slot, workers.is_empty())
-  };
+  let mut workers = WORKERS.lock().expect("loader workers lock poisoned");
+  let slot = workers.remove(&id);
+  // Dispatch and replacement registration use the same lock. Drain before a
+  // newly registered consumer can enqueue work into the permanent channel.
+  if workers.is_empty() {
+    while let Ok(task) = crate::js_tasks::JS_TASK_DISPATCHER
+      .worker_receiver
+      .try_recv()
+    {
+      task.fail("No parallel loader workers are available");
+    }
+  }
+  drop(workers);
   if let Some(slot) = slot {
     slot.stopped.store(true, Ordering::Release);
-    slot.notify.notify_waiters();
     let tasks = std::mem::take(&mut *slot.tasks.lock().expect("loader tasks lock poisoned"));
     for (id, cell) in tasks {
       TASKS
@@ -161,16 +164,6 @@ pub fn stop_loader_worker(id: u32) {
           )),
         );
       }
-    }
-  }
-  if empty {
-    while let Ok(task) = QUEUE.1.try_recv() {
-      task.finish(
-        Vec::new(),
-        Err(rspack_error::error!(
-          "No parallel loader workers are available"
-        )),
-      );
     }
   }
 }
@@ -342,72 +335,6 @@ impl Drop for JsLoaderTask {
       );
     }
   }
-}
-
-#[napi]
-pub fn cancel_worker_receive(worker: u32, receive: u32) {
-  if let Some(state) = RECEIVERS
-    .lock()
-    .expect("loader receivers lock poisoned")
-    .get(&(worker, receive))
-  {
-    state.cancelled.store(true, Ordering::Release);
-    state.notify.notify_one();
-  }
-}
-
-#[napi]
-pub fn recv_worker_task(
-  env: &Env,
-  worker: u32,
-  receive: u32,
-) -> napi::Result<PromiseRaw<'_, Option<JsLoaderTask>>> {
-  let slot = WORKERS
-    .lock()
-    .expect("loader workers lock poisoned")
-    .get(&worker)
-    .cloned()
-    .ok_or_else(|| napi::Error::from_reason("Loader worker is not registered"))?;
-  let state = Arc::<ReceiveState>::default();
-  RECEIVERS
-    .lock()
-    .expect("loader receivers lock poisoned")
-    .insert((worker, receive), state.clone());
-  rspack_napi::runtime::promise_from_future(env, async move {
-    let result = async {
-      let stopped = slot.notify.notified();
-      tokio::pin!(stopped);
-      stopped.as_mut().enable();
-      if state.cancelled.load(Ordering::Acquire) || slot.stopped.load(Ordering::Acquire) {
-        return Ok(None);
-      }
-      let task = tokio::select! {
-        biased;
-        _ = stopped => return Ok(None),
-        _ = state.notify.notified() => return Ok(None),
-        task = QUEUE.1.recv() => task.map_err(|_| napi::Error::from_reason("Parallel loader queue is closed"))?,
-      };
-      let mut active = slot.tasks.lock().expect("loader tasks lock poisoned");
-      // Worker exit may race with channel delivery. Always return its owned
-      // context to the scheduler even if no JS wrapper can be created anymore.
-      if slot.stopped.load(Ordering::Acquire) {
-        task.finish(Vec::new(), Err(rspack_error::error!("Parallel loader worker exited before completing its task")));
-        return Ok(None);
-      }
-      let id = NEXT_TASK.fetch_add(1, Ordering::Relaxed);
-      let task = Arc::new(Mutex::new(Some(task)));
-      active.insert(id, task.clone());
-      TASKS.lock().expect("loader tasks lock poisoned").insert(id, task.clone());
-      Ok(Some(JsLoaderTask {
-        slot: slot.clone(), id, task, context_taken: false, worker: true, finished: false,
-      }))
-    }.await;
-    RECEIVERS
-      .lock()
-      .expect("loader receivers lock poisoned")
-      .remove(&(worker, receive));
-    result
-  })
 }
 
 /// Main-isolate hook view. Called through RPC after a worker receives native work.

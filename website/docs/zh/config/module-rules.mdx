@@ -908,7 +908,7 @@ export default {
 
 当 `parallel` 配置为对象时，限制共享 loader worker pool 使用的最大 worker 线程数。请使用正整数。
 
-如果省略 `maxWorkers`，Rspack 默认使用 CPU 数量减一，且至少启动一个 worker。注册并行 loader 规则时会异步初始化 worker，编译会在构建模块前等待初始化完成。loader worker pool 在当前进程内共享；如果多个 loader 都配置 `parallel`，建议使用一致的 `maxWorkers` 值。
+如果省略 `maxWorkers`，Rspack 默认使用 CPU 数量减二，且至少启动一个 worker。注册并行 loader 规则时会异步初始化 worker，编译会在构建模块前等待初始化完成。loader worker pool 在当前进程内共享；如果多个 loader 都配置 `parallel`，建议使用一致的 `maxWorkers` 值。
 
 ```js title="rspack.config.mjs"
 export default {

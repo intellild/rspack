@@ -1,3 +1,4 @@
+mod capacity;
 mod dispatcher;
 mod subscription;
 mod task;
@@ -8,6 +9,7 @@ use std::{
   sync::{Arc, Weak},
 };
 
+pub(crate) use capacity::TaskPermit;
 pub(crate) use dispatcher::{JS_TASK_DISPATCHER, dispatch_main};
 use napi::bindgen_prelude::*;
 pub(crate) use subscription::{JsTaskSubscription, MAIN_TASK_SUBSCRIPTION};
@@ -108,4 +110,24 @@ pub fn get_js_task_subscription(
       Ok(External::new(Some(main)))
     }
   })
+}
+
+#[napi(ts_return_type = "ExternalObject<'JsTaskImport'>")]
+pub fn begin_js_task_import() -> napi::Result<External<Option<capacity::ImportPermit>>> {
+  LOCAL_SUBSCRIPTION.with(|slot| {
+    let subscription = slot
+      .borrow()
+      .upgrade()
+      .ok_or_else(|| napi::Error::from_reason("Worker JS task subscription has closed"))?;
+    let capacity = subscription
+      .capacity
+      .as_ref()
+      .ok_or_else(|| napi::Error::from_reason("Only worker tasks need import capacity"))?;
+    Ok(External::new(Some(capacity.begin_import())))
+  })
+}
+
+#[napi(ts_args_type = "permit: ExternalObject<'JsTaskImport'>")]
+pub fn end_js_task_import(permit: &mut External<Option<capacity::ImportPermit>>) {
+  permit.take();
 }

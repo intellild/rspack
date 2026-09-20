@@ -1,9 +1,9 @@
 import path from "node:path";
 import { spawn } from "node:child_process";
 
-function runChild(script) {
+function runChild(script, args = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--expose-gc", script], {
+    const child = spawn(process.execPath, ["--expose-gc", script, ...args], {
       cwd: path.resolve(import.meta.dirname, "../../.."),
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -37,6 +37,12 @@ function runChild(script) {
 
 /** @type {import('@rspack/test-tools').TCompilerCaseConfig[]} */
 export default [
+  {
+    description: "should recreate worker subscriptions after all compilers are collected",
+    async build() {
+      await runChild(path.join(import.meta.dirname, "fixtures", "tsfn-lifecycle", "js-task-subscriptions.mjs"), ["--parallel"]);
+    },
+  },
   {
     description: "should share JS task subscriptions and recreate them after compiler GC",
     async build() {

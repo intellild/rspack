@@ -1,8 +1,5 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import type { Tinypool, TinypoolWorker } from 'tinypool' with {
-  'resolution-mode': 'import',
-};
 import {
   prepareLoaderTask,
   completeLoaderTaskHooks,
@@ -179,7 +176,7 @@ export function getCompilerHandle(compiler: Compiler): number {
   compiler.hooks.make.tapPromise(
     { name: 'rspack:loader-workers', stage: -Infinity },
     async () => {
-      await initialization;
+      await startNativeLoaderWorkers();
     },
   );
   return handle;
@@ -777,115 +774,137 @@ export function clearWorkerLoaderContext(): void {
 }
 
 let initialization: Promise<void> | undefined;
+let compiling = false;
+let workerPoolFailed = false;
+let nextSubscriptionRequest = 1;
+
+type LoaderWorker = {
+  worker: import('node:worker_threads').Worker;
+  loaded: Promise<void>;
+  subscribe(): Promise<void>;
+};
+const loaderWorkers = new Map<number, LoaderWorker>();
+
+function spawnLoaderWorker(): LoaderWorker {
+  const { Worker, MessageChannel } =
+    require('node:worker_threads') as typeof import('node:worker_threads');
+  const { port1, port2 } = new MessageChannel();
+  const worker = new Worker(path.resolve(import.meta.dirname, 'worker.js'), {
+    workerData: { port: port2 },
+    transferList: [port2],
+  });
+  const id = worker.threadId;
+  registerLoaderWorker(id);
+  workerBridges.set(id, new ObjectBridge(port1));
+  port1.unref();
+  const pending = new Map<
+    number,
+    { resolve(): void; reject(error: Error): void }
+  >();
+  let loaded = false;
+  let failure: Error | undefined;
+  let resolveLoaded: () => void;
+  let rejectLoaded: (error: Error) => void;
+  const record: LoaderWorker = {
+    worker,
+    loaded: new Promise<void>((resolve, reject) => {
+      resolveLoaded = resolve;
+      rejectLoaded = reject;
+    }),
+    async subscribe() {
+      await record.loaded;
+      if (failure) throw failure;
+      const id = nextSubscriptionRequest++;
+      await new Promise<void>((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ id });
+      });
+    },
+  };
+  loaderWorkers.set(id, record);
+  worker.on(
+    'message',
+    (message: { loaded?: boolean; id?: number; error?: string }) => {
+      if (message.loaded) {
+        loaded = true;
+        resolveLoaded();
+        return;
+      }
+      const request = pending.get(message.id!);
+      if (!request) return;
+      pending.delete(message.id!);
+      if (message.error) request.reject(new Error(message.error));
+      else request.resolve();
+    },
+  );
+  worker.on('error', (error) => {
+    failure = error;
+  });
+  worker.once('exit', (code) => {
+    const error = failure ?? new Error(`Loader worker exited (${code})`);
+    failure = error;
+    rejectLoaded(error);
+    for (const request of pending.values()) request.reject(error);
+    pending.clear();
+    loaderWorkers.delete(id);
+    // Register a replacement before retiring the last slot. Native state of the
+    // exited worker is returned only after Node confirms JS can no longer run.
+    if (loaded && !workerPoolFailed) {
+      try {
+        const replacement = /*#__NOINLINE__*/ spawnLoaderWorker();
+        void replacement.subscribe().catch(() => {});
+      } catch {
+        // stopLoaderWorker below fails queued work when no replacement exists.
+      }
+    }
+    stopLoaderWorker(id);
+    workerBridges.get(id)?.close();
+    workerBridges.delete(id);
+  });
+  worker.unref();
+  return record;
+}
+
+async function startNativeLoaderWorkers(): Promise<void> {
+  compiling = true;
+  await initialization;
+  await Promise.all(
+    [...loaderWorkers.values()].map((worker) => worker.subscribe()),
+  );
+}
 
 export function ensureNativeLoaderWorkers(options?: {
   maxWorkers?: number;
 }): void {
   if (initialization) return;
-  // Dynamic Rule.use can first enable parallel loaders after make. Reserve a
-  // startup slot so native tasks can queue while Tinypool is still importing.
-  // Node worker thread IDs are positive; zero never represents an isolate.
   registerLoaderWorker(0);
-  initialization = import('tinypool')
-    .then(async ({ Tinypool }) => {
-      const { MessageChannel } =
-        require('node:worker_threads') as typeof import('node:worker_threads');
+  initialization = Promise.resolve()
+    .then(async () => {
       const configured =
         options?.maxWorkers ?? Number(process.env.RSPACK_LOADER_WORKER_THREADS);
       const count =
         Number.isFinite(configured) && configured > 0
           ? Math.max(1, Math.floor(configured))
-          : Math.max(1, require('node:os').cpus().length - 1);
-      const pool: Tinypool = new Tinypool({
-        filename: path.resolve(import.meta.dirname, 'worker.js'),
-        runtime: 'worker_threads',
-        minThreads: count,
-        maxThreads: count,
-        // The consumers and RPC continue in the background after bootstrap.
-        useAtomics: false,
-        concurrentTasksPerWorker: 1,
-      });
-      const observed = new WeakSet<TinypoolWorker>();
-      let initialized = false;
-      let disposed = false;
-      let bootstrap = Promise.resolve();
-
-      const fail = (error: unknown) => {
-        if (disposed) return;
-        disposed = true;
-        initialization = Promise.reject(error);
-        void initialization.catch(() => {});
-        void pool.destroy();
-      };
-
-      // Only bootstrap runs through Tinypool. Loader tasks stay in the Rust MPMC
-      // channel. Hold the bootstrap calls at a barrier to visit each isolate once.
-      const initializeWorkers = (): Promise<void> => {
-        const next = bootstrap.then(async () => {
-          const ports: Port[] = [];
-          let ready = 0;
-          const tasks = Array.from({ length: count }, () => {
-            const { port1, port2 } = new MessageChannel();
-            ports.push(port1);
-            port1.once(
-              'message',
-              ({ id, initialized }: { id: number; initialized: boolean }) => {
-                if (!initialized) {
-                  workerBridges.set(id, new ObjectBridge(port1));
-                  port1.unref();
-                }
-                if (++ready === count)
-                  for (const port of ports) port.postMessage('start');
-              },
-            );
-            return pool.run({ port: port2 }, { transferList: [port2] });
-          });
-          try {
-            await Promise.all(tasks);
-          } catch (error) {
-            for (const port of ports) port.close();
-            throw error;
-          }
-        });
-        bootstrap = next.catch(() => {});
-        return next;
-      };
-
-      const observeWorkers = () => {
-        for (const worker of pool.threads) {
-          if (observed.has(worker)) continue;
-          observed.add(worker);
-          const id = worker.threadId;
-          registerLoaderWorker(id);
-          worker.once('exit', (code: number) => {
-            // Tinypool handles errors by replacing the worker. Also route explicit
-            // process.exit through that path; release native state only after exit.
-            if (!disposed && pool.threads.includes(worker))
-              worker.emit('error', new Error(`Loader worker exited (${code})`));
-            stopLoaderWorker(id);
-            workerBridges.get(id)?.close();
-            workerBridges.delete(id);
-          });
-        }
-      };
-      pool.on('error', () => {
-        if (disposed) return;
-        // Register Tinypool's replacement before retiring the last native slot.
-        observeWorkers();
-        if (initialized) void initializeWorkers().catch(fail);
-      });
-      observeWorkers();
+          : Math.max(1, require('node:os').cpus().length - 2);
+      const workers: LoaderWorker[] = [];
       try {
-        await initializeWorkers();
-        initialized = true;
+        for (let index = 0; index < count; index++)
+          // Keep persistent worker callbacks outside rule-adaptation scopes:
+          // inlining this factory can retain the compiler through V8 contexts.
+          workers.push(/*#__NOINLINE__*/ spawnLoaderWorker());
+        await Promise.all(workers.map((worker) => worker.loaded));
       } catch (error) {
-        fail(error);
+        workerPoolFailed = true;
+        // Startup errors must not leave dispatch waiting for a nonexistent consumer.
+        for (const record of workers) void record.worker.terminate();
         throw error;
       }
     })
     .finally(() => stopLoaderWorker(0));
-  // Initialization begins during rule adaptation and is awaited by make.
+  // Loading starts during rule adaptation. Subscribe after a compiler exists,
+  // and repeat on each make so workers can attach to a recreated main owner.
   void initialization.catch(() => {});
+  if (compiling) void startNativeLoaderWorkers().catch(() => {});
 }
 
 let beginImport: (() => () => void) | undefined;

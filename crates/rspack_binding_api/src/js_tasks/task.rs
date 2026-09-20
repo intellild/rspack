@@ -7,6 +7,12 @@ pub(crate) enum JsTask {
 }
 
 impl JsTask {
+  pub(crate) fn set_permit(&mut self, permit: Option<super::TaskPermit>) {
+    match self {
+      Self::Loader(task) => task.set_permit(permit),
+    }
+  }
+
   pub(crate) fn fail(self, message: &str) {
     match self {
       Self::Loader(task) => task.finish(Vec::new(), Err(rspack_error::error!("{message}"))),

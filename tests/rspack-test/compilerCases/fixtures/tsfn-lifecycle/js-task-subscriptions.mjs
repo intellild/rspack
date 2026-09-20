@@ -5,6 +5,7 @@ import { createFsFromVolume, Volume } from "memfs";
 import { closeCompiler, createGCTracker, runCompiler } from "./helpers.mjs";
 
 const tracker = createGCTracker();
+const parallel = process.argv.includes("--parallel");
 
 function createCompiler(name) {
   const compiler = rspack({
@@ -15,7 +16,7 @@ function createCompiler(name) {
     cache: false,
     output: { path: "/", filename: `${name}.js` },
     module: {
-      rules: [{ test: /entry\.js$/, use: [{ loader: path.join(import.meta.dirname, "subscription-loader.cjs") }] }],
+      rules: [{ test: /entry\.js$/, use: [{ loader: path.join(import.meta.dirname, "subscription-loader.cjs"), parallel: parallel ? { maxWorkers: 1 } : false, options: { name, parallel } }] }],
     },
   });
   compiler.outputFileSystem = createFsFromVolume(new Volume());

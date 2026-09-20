@@ -8,6 +8,7 @@ use napi::{Env, sys};
 use tokio_util::sync::CancellationToken;
 
 use super::{
+  capacity::WorkerCapacity,
   dispatcher::JS_TASK_DISPATCHER,
   tsfn::{Delivery, JsTaskTsfn},
 };
@@ -20,6 +21,7 @@ thread_local! {
 }
 
 pub struct JsTaskSubscription {
+  pub(crate) capacity: Option<Arc<WorkerCapacity>>,
   pub(crate) ready: CancellationToken,
   cancel: CancellationToken,
   pub(crate) worker_subscriptions: DashMap<u32, Arc<JsTaskSubscription>>,
@@ -45,7 +47,9 @@ impl JsTaskSubscription {
     let ready = CancellationToken::new();
     let exited = CancellationToken::new();
     let previous = PREVIOUS_LOOP.with(|slot| slot.replace(Some(exited.clone())));
+    let capacity = worker.map(|_| Arc::<WorkerCapacity>::default());
     let subscription = Arc::new(Self {
+      capacity: capacity.clone(),
       ready: ready.clone(),
       cancel: cancel.clone(),
       worker_subscriptions: DashMap::new(),
@@ -64,9 +68,27 @@ impl JsTaskSubscription {
       }
       ready.cancel();
       loop {
-        let task = tokio::select! {
+        let idle_notify = tokio::sync::Notify::new();
+        let changed = capacity
+          .as_ref()
+          .map_or(&idle_notify, |capacity| &capacity.changed)
+          .notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        // Observe import end while waiting on recv, so a busy worker cannot
+        // keep an extra receive alive or prefetch the whole shared queue.
+        let permit = if let Some(capacity) = &capacity {
+          match capacity.acquire(&cancel).await {
+            Some(permit) => Some(permit),
+            None => break,
+          }
+        } else {
+          None
+        };
+        let mut task = tokio::select! {
           biased;
           _ = cancel.cancelled() => break,
+          _ = &mut changed => continue,
           task = receiver.recv() => match task {
             Ok(task) => task,
             Err(_) => break,
@@ -76,6 +98,7 @@ impl JsTaskSubscription {
           task.fail("JS task subscription has closed");
           break;
         }
+        task.set_permit(permit);
         tsfn.post(Delivery {
           task,
           worker,

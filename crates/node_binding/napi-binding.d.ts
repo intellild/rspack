@@ -530,6 +530,8 @@ export interface AssetInfoRelated {
 
 export declare function async(path: string, request: string): Promise<ResolveResult>
 
+export declare function beginJsTaskImport(): ExternalObject<'JsTaskImport'>
+
 export interface BuiltinPlugin {
   name: BuiltinPluginName | CustomPluginName
   options: unknown
@@ -641,8 +643,6 @@ export declare enum BuiltinPluginName {
   RscClientPlugin = 'RscClientPlugin'
 }
 
-export declare function cancelWorkerReceive(worker: number, receive: number): void
-
 export declare function cleanupGlobalTrace(): void
 
 export declare function completeLoaderTaskHooks(id: number, context: JsLoaderContext): void
@@ -651,6 +651,8 @@ export interface ContextInfo {
   issuer: string
   issuerLayer?: string
 }
+
+export declare function endJsTaskImport(permit: ExternalObject<'JsTaskImport'>): void
 
 export declare enum EnforceExtension {
   Auto = 0,
@@ -3270,8 +3272,6 @@ export interface RealDependencyLocation {
   start: SourcePosition
   end?: SourcePosition
 }
-
-export declare function recvWorkerTask(worker: number, receive: number): Promise<JsLoaderTask | undefined | null>
 
 /** * this is a process level tracing, which means it would be shared by all compilers in the same process
  * only the first call would take effect, the following calls would be ignored
