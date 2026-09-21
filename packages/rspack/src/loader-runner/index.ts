@@ -56,8 +56,8 @@ import { ModuleError, ModuleWarning } from './ModuleError';
 import { LoaderDependenciesState } from './dependencies';
 import {
   beginWorkerImport,
-  getMainObject,
-  registerMainObject,
+  deserializeAdditionalData,
+  serializeAdditionalData,
   registerLoaderContext,
 } from './service';
 import {
@@ -867,7 +867,7 @@ export async function runLoaders(
             context.sourceMap = serializeObject(sourceMap);
             context.additionalData = isNil(additionalData)
               ? undefined
-              : registerMainObject(additionalData);
+              : serializeAdditionalData(additionalData);
             break;
           }
         }
@@ -882,7 +882,7 @@ export async function runLoaders(
         let sourceMapParsed = false;
         let additionalData = isNil(context.additionalData)
           ? undefined
-          : getMainObject(context.additionalData);
+          : deserializeAdditionalData(context.additionalData);
 
         while (loaderContext.loaderIndex >= loaderChainStart) {
           const currentLoaderObject =
@@ -929,7 +929,7 @@ export async function runLoaders(
             ? undefined
             : isNil(additionalData)
               ? undefined
-              : registerMainObject(additionalData);
+              : serializeAdditionalData(additionalData);
 
         break;
       }

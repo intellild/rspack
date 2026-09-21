@@ -16,8 +16,7 @@ module.exports = function () {
     typed: [...options.typed],
     url: options.url.href,
     custom: this.customTransform(this.customValue),
-    hook: this.hookTransform(this.hookValue),
-    hookMainThread: this.hookMainThread,
+    skippedHook: this.hookTransform === undefined && this.hookValue === undefined,
     worker: !isMainThread,
   })}`;
 };

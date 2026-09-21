@@ -7,8 +7,7 @@ it('should synchronously call option functions on the main thread', () => {
     typed: [1, 2, 3],
     url: 'https://rspack.dev/loader-options',
     custom: 'custom:context',
-    hook: 'hook:context',
-    hookMainThread: true,
+    skippedHook: true,
     worker: true,
   });
 });

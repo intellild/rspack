@@ -1,8 +1,11 @@
-use napi::bindgen_prelude::Either3;
+use napi::bindgen_prelude::{Either, Either3};
 use rspack_core::{AdditionalData, LoaderContext, RunnerContext};
 use rspack_error::{Result, ToStringResultToRspackResultExt};
 
-use super::{JsLoaderContext, bridge::MainObjectHandle};
+use super::{
+  JsLoaderContext,
+  bridge::{MainObjectHandle, SerializedLoaderData},
+};
 
 pub(super) fn merge_loader_hooks(to: &mut LoaderContext<RunnerContext>, mut from: JsLoaderContext) {
   to.cacheable = from.cacheable;
@@ -36,13 +39,20 @@ pub(crate) fn merge_loader_context(
   // Own returned handles before fallible conversion so errors also release them.
   let additional_data = from.additional_data.take().map(|data| {
     let mut additional = AdditionalData::default();
-    let handle = to
-      .additional_data()
-      .and_then(|data| data.get::<MainObjectHandle>())
-      .filter(|handle| handle.handle() == data)
-      .cloned()
-      .unwrap_or_else(|| MainObjectHandle::new(data));
-    additional.insert(handle);
+    match data {
+      Either::A(data) => {
+        let handle = to
+          .additional_data()
+          .and_then(|data| data.get::<MainObjectHandle>())
+          .filter(|handle| handle.handle() == data)
+          .cloned()
+          .unwrap_or_else(|| MainObjectHandle::new(data));
+        additional.insert(handle);
+      }
+      Either::B(bytes) => {
+        additional.insert(SerializedLoaderData(bytes.to_vec()));
+      }
+    }
     additional
   });
 

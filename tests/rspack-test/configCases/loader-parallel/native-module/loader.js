@@ -17,7 +17,7 @@ module.exports = function () {
   module.factoryMeta = { sideEffectFree: false };
   module.matchResource = "worker-resource.js";
   module.buildInfo.nativeWorker = true;
-  assert.equal(module.buildInfo.fromHook(), "main hook");
+  assert.equal(module.buildInfo.fromBuildModule(), "main buildModule");
   this.emitFile("worker-module.txt", "from native worker", undefined, {
     immutable: true,
     sourceFilename: "value.js"

@@ -14,11 +14,9 @@ import {
 import { runLoaders } from '.';
 import { createWorkerModule } from './workerModule';
 import {
-  type WorkerLoaderContext,
   prepareWorkerTask,
   clearWorkerLoaderContext,
   createWorkerCompiler,
-  getMainObject,
   setLoaderObjectBridge,
   setWorkerImportScheduler,
 } from './service';
@@ -29,9 +27,8 @@ async function execute(task: JsLoaderTask): Promise<void> {
   activeTasks++;
   let module: ReturnType<typeof createWorkerModule> | undefined;
   try {
-    await prepareWorkerTask(task.mainObjectHandle, task.id);
+    const main = await prepareWorkerTask(task.mainObjectHandle, task.id);
     const context = task.takeContext();
-    const main = getMainObject<WorkerLoaderContext>(context.bridgeHandle!);
     module = createWorkerModule(context._module!, main.buildInfo);
     const result = await runLoaders(
       createWorkerCompiler(main),

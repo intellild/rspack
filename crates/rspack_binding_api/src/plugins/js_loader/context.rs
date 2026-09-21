@@ -7,7 +7,7 @@ use rspack_error::ToStringResultToRspackResultExt;
 use rspack_loader_runner::State as LoaderState;
 use rustc_hash::FxHashMap as HashMap;
 
-use super::bridge::MainObjectHandle;
+use super::bridge::{MainObjectHandle, SerializedLoaderData};
 use crate::{error::RspackError, module::ModuleObject};
 
 #[napi(object)]
@@ -168,7 +168,7 @@ pub struct JsLoaderContext {
 
   /// Content maybe empty in pitching stage
   pub content: Either3<String, Buffer, Null>,
-  pub additional_data: Option<u32>,
+  pub additional_data: Option<Either<u32, Buffer>>,
   pub hooks_only: bool,
   pub bridge_handle: Option<u32>,
   #[napi(js_name = "__internal__parseMeta")]
@@ -204,10 +204,19 @@ impl JsLoaderContext {
     cx: &mut LoaderContext<RunnerContext>,
     hooks_only: bool,
   ) -> rspack_error::Result<Self> {
-    let additional_data = cx
-      .additional_data()
-      .and_then(|data| data.get::<MainObjectHandle>())
-      .map(MainObjectHandle::handle);
+    let additional_data = (!hooks_only)
+      .then(|| cx.additional_data())
+      .flatten()
+      .and_then(|data| {
+        data
+          .get::<SerializedLoaderData>()
+          .map(|data| Either::B(Buffer::from(data.0.clone())))
+          .or_else(|| {
+            data
+              .get::<MainObjectHandle>()
+              .map(|handle| Either::A(handle.handle()))
+          })
+      });
 
     let module = &cx.context.module;
 

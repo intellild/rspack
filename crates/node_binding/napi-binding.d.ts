@@ -674,6 +674,9 @@ export declare function formatDiagnostic(diagnostic: JsDiagnostic): ExternalObje
  */
 export declare function getJsTaskSubscription(isWorker: boolean): ExternalObject<'JsTaskSubscription'>
 
+/** Read cached V8 bytes in the calling worker env, without a main-thread RPC. */
+export declare function getSerializedLoaderOptions(owner: number, ident: string): Buffer | null
+
 export interface JsAddingRuntimeModule {
   name: string
   generator: () => String
@@ -985,7 +988,7 @@ export interface JsLoaderContext {
   hot: Readonly<boolean>
   /** Content maybe empty in pitching stage */
   content: string | Buffer | null
-  additionalData?: number
+  additionalData?: number | Buffer
   hooksOnly: boolean
   bridgeHandle?: number
   __internal__parseMeta: Record<string, string>
@@ -3400,7 +3403,7 @@ export interface RegisterJsTaps {
 /** Register one compiler-independent entry point in the current JS env. */
 export declare function registerJsTaskRunner(runner: (arg0: unknown, arg1: unknown) => void, workerId?: number | undefined | null): void
 
-export declare function registerLoaderReference(owner: number, ident: string, parallel: boolean): boolean
+export declare function registerLoaderReference(owner: number, ident: string, parallel: boolean, serialized?: Buffer | undefined | null): boolean
 
 export declare function registerLoaderWorker(id: number): void
 

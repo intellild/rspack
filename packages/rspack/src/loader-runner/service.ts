@@ -4,6 +4,7 @@ import {
   prepareLoaderTask,
   completeLoaderTaskHooks,
   registerLoaderReference,
+  getSerializedLoaderOptions,
   registerLoaderWorker,
   registerMainObjectRelease,
   releaseLoaderReferences,
@@ -11,7 +12,6 @@ import {
 } from '@rspack/binding';
 import type { BuildInfo } from '@rspack/binding';
 import type { Compiler } from '../Compiler';
-import { runLoaders } from '.';
 
 const require = createRequire(import.meta.url);
 type Port = import('node:worker_threads').MessagePort;
@@ -71,8 +71,45 @@ const parallelCompilers = new WeakSet<Compiler>();
 
 const workerOptions = new Map<
   number,
-  { version: number; values: Map<string, object> }
+  { version: number; values: Map<string, unknown> }
 >();
+
+function serializeLoaderValue(value: unknown): Buffer | undefined {
+  if (IS_BROWSER || process.env.WASM) return undefined;
+  const { serialize } = require('node:v8') as typeof import('node:v8');
+  try {
+    return serialize(value);
+  } catch {
+    // Leave functions and other non-serializable values on the existing bridge.
+    return undefined;
+  }
+}
+
+function deserializeLoaderValue(bytes: Buffer): unknown {
+  const { deserialize } = require('node:v8') as typeof import('node:v8');
+  return deserialize(bytes);
+}
+
+export function serializeAdditionalData(value: unknown): Buffer | number {
+  // V8 turns class instances into plain objects and drops prototype methods.
+  // Keep those roots on the existing bridge, outside this plain-data experiment.
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    Object.prototype.toString.call(value) === '[object Object]'
+  ) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== null && prototype !== Object.prototype)
+      return registerMainObject(value);
+  }
+  return serializeLoaderValue(value) ?? registerMainObject(value);
+}
+
+export function deserializeAdditionalData(value: Buffer | number): unknown {
+  return typeof value === 'number'
+    ? getMainObject(value)
+    : deserializeLoaderValue(value);
+}
 
 export function releaseWorkerCompiler(handle: number): void {
   workerOptions.delete(handle);
@@ -96,7 +133,25 @@ export function createWorkerCompiler(main: WorkerLoaderContext): Compiler {
   const get = references.get;
   const cache = cached.values;
   references.get = (ident: string) => {
-    if (!cache.has(ident)) cache.set(ident, get(ident));
+    if (!cache.has(ident)) {
+      const optionsIdent = ident.endsWith('$$parallelism')
+        ? ident.slice(0, -'$$parallelism'.length)
+        : ident;
+      const bytes = getSerializedLoaderOptions(
+        main.compilerHandle,
+        optionsIdent,
+      );
+      if (bytes) {
+        const value = deserializeLoaderValue(bytes) as {
+          options: unknown;
+          parallel: boolean | { maxWorkers?: number } | undefined;
+        };
+        cache.set(optionsIdent, value.options);
+        cache.set(`${optionsIdent}$$parallelism`, value.parallel);
+      } else {
+        cache.set(ident, get(ident));
+      }
+    }
     return cache.get(ident);
   };
   return main.compiler;
@@ -199,6 +254,10 @@ export function registerParallelLoader(
     getCompilerHandle(compiler),
     ident,
     !!parallel,
+    serializeLoaderValue({
+      options: compiler.__internal__ruleSet.references.get(ident),
+      parallel,
+    }),
   );
   if (useWorker && !IS_BROWSER && !process.env.WASM) {
     parallelCompilers.add(compiler);
@@ -586,20 +645,24 @@ class ObjectBridge {
       return;
     }
     if (message.operation === 'prepare') {
-      const workerId = this.decode(message.args![0]) as number;
+      const taskId = this.decode(message.args![0]) as number;
       void Promise.resolve()
-        .then(() =>
-          runLoaders(
+        .then(() => {
+          // Parallel loaders skip NormalModule's loader hook. Only prepare the
+          // main-owned API bridge; the worker constructs its loader context.
+          const context = prepareLoaderTask(taskId);
+          const handle = registerLoaderContext(
             lookup(message.target) as Compiler,
-            prepareLoaderTask(workerId),
-          ),
-        )
-        .then((context) => {
-          completeLoaderTaskHooks(workerId, context);
+            context._module!.buildInfo,
+            {},
+          );
+          context.bridgeHandle = handle;
+          completeLoaderTaskHooks(taskId, context);
+          this.activeTasks.add(handle);
           this.port.postMessage({
             type: 'response',
             id: message.id,
-            result: this.encode(undefined),
+            result: this.encode(lookup(handle)),
           });
         })
         .catch((error: Error) => {
@@ -772,13 +835,13 @@ export function setLoaderObjectBridge(port: Port, workerId: number): void {
 
 export async function prepareWorkerTask(
   mainHandle: number,
-  workerId: number,
-): Promise<void> {
-  await bridge!.async({
+  taskId: number,
+): Promise<WorkerLoaderContext> {
+  return bridge!.async({
     operation: 'prepare',
     target: mainHandle,
-    args: [bridge!.encode(workerId)],
-  });
+    args: [bridge!.encode(taskId)],
+  }) as Promise<WorkerLoaderContext>;
 }
 
 export function clearWorkerLoaderContext(): void {

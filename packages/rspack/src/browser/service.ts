@@ -25,6 +25,9 @@ export function getMainObject(handle: number): unknown {
   return values.get(handle);
 }
 
+export const serializeAdditionalData = registerMainObject;
+export const deserializeAdditionalData = getMainObject;
+
 export function getCompilerHandle(_compiler: Compiler): number {
   return 0;
 }

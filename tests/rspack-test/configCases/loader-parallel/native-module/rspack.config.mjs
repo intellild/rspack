@@ -21,13 +21,15 @@ export default {
             expect(asset.info.immutable).toBe(true);
             expect(asset.info.sourceFilename).toBe('value.js');
           });
+          compilation.hooks.buildModule.tap('NativeWorkerModule', (module) => {
+            if (!module.resource?.endsWith('value.js')) return;
+            module.buildInfo.fromBuildModule = () => 'main buildModule';
+          });
           rspack.NormalModule.getCompilationHooks(compilation).loader.tap(
             'NativeWorkerModule',
             (context, module) => {
               if (!module.resource?.endsWith('value.js')) return;
-              module.buildInfo.fromHook = () => 'main hook';
-              // Extensions cannot replace the worker's native-backed facade.
-              context._module = { replacedByMainHook: true };
+              throw new Error('Parallel loaders must skip the loader hook');
             },
           );
         });

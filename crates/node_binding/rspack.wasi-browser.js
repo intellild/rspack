@@ -137,6 +137,7 @@ export const registerLoaderWorker = __napiModule.exports.registerLoaderWorker
 export const stopLoaderWorker = __napiModule.exports.stopLoaderWorker
 export const registerMainObjectRelease = __napiModule.exports.registerMainObjectRelease
 export const registerLoaderReference = __napiModule.exports.registerLoaderReference
+export const getSerializedLoaderOptions = __napiModule.exports.getSerializedLoaderOptions
 export const releaseLoaderReferences = __napiModule.exports.releaseLoaderReferences
 export const prepareLoaderTask = __napiModule.exports.prepareLoaderTask
 export const completeLoaderTaskHooks = __napiModule.exports.completeLoaderTaskHooks

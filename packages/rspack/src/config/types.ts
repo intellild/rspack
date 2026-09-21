@@ -898,6 +898,8 @@ export type RuleSetLoaderWithOptions = {
    * worker threads.
    * - When set to `{ maxWorkers }`, you can explicitly define the maximum number of workers to use.
    * - When set to `false` or omitted, the loader runs on the main thread.
+   * - Worker execution skips `NormalModule`'s `loader` hook, so properties added by that hook
+   * are unavailable to parallel loaders.
    */
   parallel?: boolean | { maxWorkers?: number };
 
