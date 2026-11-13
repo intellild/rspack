@@ -6,26 +6,22 @@ use napi::{
 };
 use once_cell::sync::OnceCell;
 use rspack_core::{
-  DeferredModuleRuleOptions, GeneratorOptions, GeneratorOptionsMap, ModuleRuleOptions, ModuleType,
-  ParserOptions, ParserOptionsMap,
+  AssetGeneratorDataUrlOptions, AssetGeneratorOptions, AssetInlineGeneratorOptions,
+  AssetParserDataUrlOptions, AssetParserOptions, AssetResourceGeneratorOptions,
+  CssAutoOrModuleParserOptions, CssGeneratorOptions, CssModuleGeneratorOptions,
+  CssModuleParserOptions, CssParserOptions, DeferredModuleRuleOptions, GeneratorOptions,
+  GeneratorOptionsMap, JavascriptParserCommonjsOptions, JavascriptParserOptions,
+  JavascriptParserWorkerOptions, JsonGeneratorOptions, JsonParserOptions, ModuleRuleOptions,
+  ModuleType, ParserOptions, ParserOptionsMap,
 };
 use rspack_error::Result;
 use rspack_napi::owned_value::{
-  FromObject, FromValue, Value, ValueGraph, ValueRef, enumerable_own_keys,
+  FromObject, FromValue, ObjectFields, Value, ValueGraph, ValueRef, enumerable_own_keys,
 };
-use rspack_regex::RspackRegex;
 use rspack_util::fx_hash::FxIndexSet;
 use rustc_hash::FxHashMap as HashMap;
 
-use super::{
-  RawAssetGeneratorDataUrlOptions, RawAssetGeneratorOptions, RawAssetInlineGeneratorOptions,
-  RawAssetParserDataUrlOptions, RawAssetParserOptions, RawAssetResourceGeneratorOptions,
-  RawCssAutoOrModuleParserOptions, RawCssGeneratorOptions, RawCssModuleGeneratorOptions,
-  RawCssModuleParserOptions, RawCssParserOptions, RawImportMetaOptions,
-  RawJavascriptParserCommonjsExports, RawJavascriptParserCommonjsOptions,
-  RawJavascriptParserOptions, RawJavascriptParserWorkerOptions, RawJsonGeneratorOptions,
-  RawJsonParserOptions,
-};
+use super::config_value::ModuleOptionsDecoder;
 use crate::{
   compiler_scoped_tsfn::{CompilerScopedTsFnHandle as ThreadsafeFunction, capture_scoped_function},
   filename::JsFilename,
@@ -47,19 +43,19 @@ pub(super) fn config_value_fields() -> HashMap<String, Vec<String>> {
   fields.extend([
     (
       "worker".into(),
-      field_names(RawJavascriptParserWorkerOptions::FIELDS),
+      field_names(JavascriptParserWorkerOptions::FIELDS),
     ),
     (
       "commonjs".into(),
-      field_names(RawJavascriptParserCommonjsOptions::FIELDS),
+      field_names(JavascriptParserCommonjsOptions::FIELDS),
     ),
     (
       "dataUrlCondition".into(),
-      field_names(RawAssetParserDataUrlOptions::FIELDS),
+      field_names(AssetParserDataUrlOptions::FIELDS),
     ),
     (
       "dataUrl".into(),
-      field_names(RawAssetGeneratorDataUrlOptions::FIELDS),
+      field_names(AssetGeneratorDataUrlOptions::FIELDS),
     ),
   ]);
   crate::options::raw_resolve::add_dom_fields(&mut fields);
@@ -210,7 +206,7 @@ macro_rules! module_options {
           rspack_error::error!("Expected module options to be an object")
         })?;
         Ok(Some(match module_type {
-          $($($kind)|+ => $options::$variant($raw::from_object(fields)?.into()),)+
+          $($($kind)|+ => $options::$variant(<$raw as FromObject<ModuleOptionsDecoder>>::from_object(fields)?),)+
           _ => return Ok(None),
         }))
       }
@@ -235,27 +231,27 @@ macro_rules! module_options {
 }
 
 module_options!(RawParserOptionObject, RawParserOptions, ParserOptions, ParserOptionsMap, |_| false, {
-  "javascript" => Javascript(RawJavascriptParserOptions),
-  "javascript/auto" => JavascriptAuto(RawJavascriptParserOptions),
-  "javascript/dynamic" => JavascriptDynamic(RawJavascriptParserOptions),
-  "javascript/esm" => JavascriptEsm(RawJavascriptParserOptions),
-  "asset" => Asset(RawAssetParserOptions),
-  "css/auto" | "css/module" => CssAutoOrModule(RawCssAutoOrModuleParserOptions),
-  "css/global" => CssModule(RawCssModuleParserOptions),
-  "css" => Css(RawCssParserOptions),
-  "json" => Json(RawJsonParserOptions),
+  "javascript" => Javascript(JavascriptParserOptions),
+  "javascript/auto" => JavascriptAuto(JavascriptParserOptions),
+  "javascript/dynamic" => JavascriptDynamic(JavascriptParserOptions),
+  "javascript/esm" => JavascriptEsm(JavascriptParserOptions),
+  "asset" => Asset(AssetParserOptions),
+  "css/auto" | "css/module" => CssAutoOrModule(CssAutoOrModuleParserOptions),
+  "css/global" => CssModule(CssModuleParserOptions),
+  "css" => Css(CssParserOptions),
+  "json" => Json(JsonParserOptions),
 });
 
 module_options!(RawGeneratorOptionObject, RawGeneratorOptions, GeneratorOptions, GeneratorOptionsMap, |key| matches!(
   key,
   "asset/source" | "asset/bytes" | "javascript" | "javascript/auto" | "javascript/dynamic" | "javascript/esm"
 ), {
-  "asset" => Asset(RawAssetGeneratorOptions),
-  "asset/inline" => AssetInline(RawAssetInlineGeneratorOptions),
-  "asset/resource" => AssetResource(RawAssetResourceGeneratorOptions),
-  "css" => Css(RawCssGeneratorOptions),
-  "css/auto" | "css/global" | "css/module" => CssModule(RawCssModuleGeneratorOptions),
-  "json" => Json(RawJsonGeneratorOptions),
+  "asset" => Asset(AssetGeneratorOptions),
+  "asset/inline" => AssetInline(AssetInlineGeneratorOptions),
+  "asset/resource" => AssetResource(AssetResourceGeneratorOptions),
+  "css" => Css(CssGeneratorOptions),
+  "css/auto" | "css/global" | "css/module" => CssModule(CssModuleGeneratorOptions),
+  "json" => Json(JsonGeneratorOptions),
 });
 
 impl<T: 'static + JsValuesTupleIntoVec, R> FromValue for ThreadsafeFunction<T, R> {
@@ -267,16 +263,6 @@ impl<T: 'static + JsValuesTupleIntoVec, R> FromValue for ThreadsafeFunction<T, R
   }
 }
 
-pub(super) fn wrapped_context_reg_exp(value: ValueRef<'_>) -> Option<RspackRegex> {
-  let fields = value.object()?;
-  let (Value::String(source), Value::String(flags)) =
-    (fields.get("source")?.value(), fields.get("flags")?.value())
-  else {
-    return None;
-  };
-  RspackRegex::with_flags(source, flags).ok()
-}
-
 impl FromValue for JsFilename {
   fn from_value(value: ValueRef<'_>) -> Option<Self> {
     let filename = match value.value() {
@@ -285,43 +271,5 @@ impl FromValue for JsFilename {
       _ => return None,
     };
     Some(Self { filename })
-  }
-}
-
-impl FromValue for RawJavascriptParserCommonjsExports {
-  fn from_value(value: ValueRef<'_>) -> Option<Self> {
-    match value.value() {
-      Value::String(value) if value == "skipInEsm" => Some(Self::SkipInEsm),
-      _ => None,
-    }
-  }
-}
-
-pub(super) fn stringified(value: ValueRef<'_>) -> Option<String> {
-  match value.value() {
-    Value::Bool(value) => Some(value.to_string()),
-    Value::Number(value) => Some(rspack_util::ryu_js::Buffer::new().format(*value).to_owned()),
-    _ => String::from_value(value),
-  }
-}
-
-pub(super) fn false_or_string(value: ValueRef<'_>) -> Option<String> {
-  match value.value() {
-    Value::Bool(false) => Some("false".into()),
-    _ => String::from_value(value),
-  }
-}
-
-pub(super) fn import_meta(value: ValueRef<'_>) -> Option<Either<String, RawImportMetaOptions>> {
-  match value.value() {
-    Value::Object(_) => Some(Either::B(
-      value
-        .object()?
-        .iter()
-        .filter_map(|(key, value)| bool::from_value(value).map(|value| (key.clone(), value)))
-        .collect(),
-    )),
-    Value::Bool(value) => Some(Either::A(value.to_string())),
-    _ => String::from_value(value).map(Either::A),
   }
 }

@@ -1,3 +1,5 @@
+#[cfg(feature = "napi")]
+mod config_value;
 use std::{
   fmt,
   ops::{Deref, DerefMut},
@@ -6,6 +8,8 @@ use std::{
 
 use async_recursion::async_recursion;
 use bitflags::bitflags;
+#[cfg(feature = "napi")]
+pub use config_value::ModuleOptionsContext;
 use derive_more::Debug;
 use futures::future::BoxFuture;
 use rspack_cacheable::{cacheable, with::Unsupported};
@@ -227,7 +231,9 @@ impl From<bool> for JavascriptParserCommonjsExportsOption {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
 pub struct JavascriptParserCommonjsOptions {
+  #[cfg_attr(feature = "napi", js_value(with_value = config_value::commonjs_exports))]
   pub exports: JavascriptParserCommonjsExportsOption,
 }
 
@@ -420,8 +426,10 @@ impl MergeFrom for ImportMetaKnownProperties {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom, Default)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
 pub struct JavascriptParserWorkerOptions {
   pub alias: Option<Vec<String>>,
+  #[cfg_attr(feature = "napi", js_value(with_value = config_value::worker_url))]
   pub url: Option<JavascriptParserWorkerUrl>,
 }
 
@@ -498,37 +506,54 @@ impl ImportMeta {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom, Default)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
 pub struct JavascriptParserOptions {
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_str))]
   pub dynamic_import_mode: Option<DynamicImportMode>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::order))]
   pub dynamic_import_preload: Option<JavascriptParserOrder>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::order))]
   pub dynamic_import_prefetch: Option<JavascriptParserOrder>,
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_str))]
   pub dynamic_import_fetch_priority: Option<DynamicImportFetchPriority>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::url))]
   pub url: Option<JavascriptParserUrl>,
   pub dynamic_url: Option<bool>,
   pub unknown_context_critical: Option<bool>,
   pub expr_context_critical: Option<bool>,
   pub wrapped_context_critical: Option<bool>,
   pub strict_this_context_on_imports: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::wrapped_context_reg_exp))]
   pub wrapped_context_reg_exp: Option<RspackRegex>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::presence))]
   pub exports_presence: Option<ExportPresenceMode>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::presence))]
   pub import_exports_presence: Option<ExportPresenceMode>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::presence))]
   pub reexport_exports_presence: Option<ExportPresenceMode>,
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_str))]
   pub type_reexports_presence: Option<TypeReexportPresenceMode>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::worker))]
   pub worker: Option<JavascriptParserWorkerOptions>,
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_str))]
   pub override_strict: Option<OverrideStrict>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::import_meta))]
   pub import_meta: Option<ImportMeta>,
   pub require_alias: Option<bool>,
   pub require_as_expression: Option<bool>,
   pub require_dynamic: Option<bool>,
   pub require_resolve: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::commonjs))]
   pub commonjs: Option<JavascriptParserCommonjsOptions>,
   pub import_dynamic: Option<bool>,
   pub commonjs_magic_comments: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(with = config_value::create_require))]
   pub create_require: Option<JavascriptParserCreateRequire>,
   pub jsx: Option<bool>,
   pub defer_import: Option<bool>,
   pub source_import: Option<bool>,
   pub import_meta_resolve: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(rename = "pureFunctions"))]
   pub side_effects_free: Option<Vec<String>>,
 }
 
@@ -567,7 +592,9 @@ impl MergeFrom for JavascriptParserCreateRequire {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
 pub struct AssetParserOptions {
+  #[cfg_attr(feature = "napi", js_value(with = config_value::asset_parser_data_url))]
   pub data_url_condition: Option<AssetParserDataUrl>,
 }
 
@@ -580,6 +607,7 @@ pub enum AssetParserDataUrl {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
 pub struct AssetParserDataUrlOptions {
   pub max_size: Option<f64>,
 }
@@ -634,11 +662,15 @@ impl MergeFrom for CssParserImport {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
+#[cfg_attr(feature = "napi", js_value(context = config_value::ModuleOptionsContext))]
 pub struct CssParserOptions {
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_string))]
   pub export_type: Option<CssExportType>,
   pub named_exports: Option<bool>,
   pub url: Option<bool>,
   pub r#import: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::css_import))]
   pub resolve_import: Option<CssParserImport>,
 }
 
@@ -656,11 +688,15 @@ impl Default for CssParserOptions {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
+#[cfg_attr(feature = "napi", js_value(context = config_value::ModuleOptionsContext))]
 pub struct CssModuleParserOptions {
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_string))]
   pub export_type: Option<CssExportType>,
   pub named_exports: Option<bool>,
   pub url: Option<bool>,
   pub r#import: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::css_import))]
   pub resolve_import: Option<CssParserImport>,
   pub animation: Option<bool>,
   pub container: Option<bool>,
@@ -690,11 +726,15 @@ impl Default for CssModuleParserOptions {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
+#[cfg_attr(feature = "napi", js_value(context = config_value::ModuleOptionsContext))]
 pub struct CssAutoOrModuleParserOptions {
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_string))]
   pub export_type: Option<CssExportType>,
   pub named_exports: Option<bool>,
   pub url: Option<bool>,
   pub r#import: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::css_import))]
   pub resolve_import: Option<CssParserImport>,
   pub animation: Option<bool>,
   pub container: Option<bool>,
@@ -837,8 +877,11 @@ impl MergeFrom for ParseOption {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
+#[cfg_attr(feature = "napi", js_value(context = config_value::ModuleOptionsContext))]
 pub struct JsonParserOptions {
   pub exports_depth: Option<u32>,
+  #[cfg_attr(feature = "napi", js_value(with_value = Context::json_parse))]
   pub parse: ParseOption,
 }
 
@@ -936,7 +979,10 @@ impl GeneratorOptions {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
+#[cfg_attr(feature = "napi", js_value(context = config_value::ModuleOptionsContext))]
 pub struct AssetInlineGeneratorOptions {
+  #[cfg_attr(feature = "napi", js_value(with = Context::data_url))]
   pub data_url: Option<AssetGeneratorDataUrl>,
   pub binary: Option<bool>,
 }
@@ -988,11 +1034,17 @@ impl Default for AssetGeneratorImportMode {
 
 #[cacheable]
 #[derive(Debug, Clone, Default, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
+#[cfg_attr(feature = "napi", js_value(context = config_value::ModuleOptionsContext))]
 pub struct AssetResourceGeneratorOptions {
   pub emit: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::filename))]
   pub filename: Option<Filename>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::filename))]
   pub output_path: Option<Filename>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::public_path))]
   pub public_path: Option<PublicPath>,
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_string))]
   pub import_mode: Option<AssetGeneratorImportMode>,
   pub binary: Option<bool>,
 }
@@ -1012,12 +1064,19 @@ impl From<AssetGeneratorOptions> for AssetResourceGeneratorOptions {
 
 #[cacheable]
 #[derive(Debug, Clone, Default, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
+#[cfg_attr(feature = "napi", js_value(context = config_value::ModuleOptionsContext))]
 pub struct AssetGeneratorOptions {
   pub emit: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::filename))]
   pub filename: Option<Filename>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::filename))]
   pub output_path: Option<Filename>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::public_path))]
   pub public_path: Option<PublicPath>,
+  #[cfg_attr(feature = "napi", js_value(with = Context::data_url))]
   pub data_url: Option<AssetGeneratorDataUrl>,
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_string))]
   pub import_mode: Option<AssetGeneratorImportMode>,
   pub binary: Option<bool>,
 }
@@ -1064,7 +1123,9 @@ impl MergeFrom for AssetGeneratorDataUrl {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
 pub struct AssetGeneratorDataUrlOptions {
+  #[cfg_attr(feature = "napi", js_value(with = config_value::encoding))]
   pub encoding: Option<DataUrlEncoding>,
   pub mimetype: Option<String>,
 }
@@ -1124,6 +1185,7 @@ impl From<String> for DataUrlEncoding {
 
 #[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
 pub struct CssGeneratorOptions {
   pub exports_only: Option<bool>,
   pub runtime_public_path: Option<bool>,
@@ -1132,14 +1194,20 @@ pub struct CssGeneratorOptions {
 
 #[cacheable]
 #[derive(Default, Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
 pub struct CssModuleGeneratorOptions {
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_string))]
   pub exports_convention: Option<CssExportsConvention>,
   pub exports_only: Option<bool>,
   pub runtime_public_path: Option<bool>,
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_str))]
   pub local_ident_hash_digest: Option<HashDigest>,
   pub local_ident_hash_digest_length: Option<u32>,
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_str))]
   pub local_ident_hash_function: Option<HashFunction>,
+  #[cfg_attr(feature = "napi", js_value(with_value = config_value::hash_salt))]
   pub local_ident_hash_salt: HashSalt,
+  #[cfg_attr(feature = "napi", js_value(with = rspack_napi::owned_value::from_string))]
   pub local_ident_name: Option<LocalIdentName>,
   pub es_module: Option<bool>,
 }
@@ -1172,7 +1240,9 @@ impl From<&CssGeneratorOptions> for CssModuleGeneratorOptions {
 
 #[cacheable]
 #[derive(Default, Debug, Clone, MergeFrom)]
+#[cfg_attr(feature = "napi", derive(rspack_napi::FromJsObject))]
 pub struct JsonGeneratorOptions {
+  #[cfg_attr(feature = "napi", js_value(rename = "JSONParse"))]
   pub json_parse: Option<bool>,
 }
 

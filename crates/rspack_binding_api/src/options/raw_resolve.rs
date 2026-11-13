@@ -9,7 +9,7 @@ use rspack_core::{
   Restriction, TsconfigOptions, TsconfigReferences,
 };
 use rspack_error::error;
-use rspack_napi::owned_value::{FromObject, FromValue, Value, ValueGraph, ValueRef};
+use rspack_napi::owned_value::{FromObject, FromValue, ObjectFields, Value, ValueGraph, ValueRef};
 use rspack_napi_macros::FromJsObject;
 use rspack_regex::RspackRegex;
 use rustc_hash::FxHashMap as HashMap;
@@ -88,7 +88,7 @@ impl TryFrom<RawConfigValue> for Resolve {
       .root()
       .object()
       .ok_or_else(|| error!("Expected resolve options to be an object"))?;
-    RawResolveOptions::from_object(fields)?.try_into()
+    <RawResolveOptions as FromObject>::from_object(fields)?.try_into()
   }
 }
 

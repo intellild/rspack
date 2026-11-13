@@ -6,7 +6,13 @@ mod tagged_union;
 ///
 /// Fields use camelCase by default. Use `#[js_value(rename = "...")]` to
 /// override the key and `#[js_value(with = path)]` to decode an optional field
-/// with a custom function.
+/// with a custom function. `#[js_value(with_value = path)]` also passes missing
+/// or null fields to the function, allowing it to supply a required value.
+///
+/// `#[js_value(context = Trait)]` adds a `Context: Trait` decoder parameter.
+/// Field converters can call `Context::method` to bridge callbacks without
+/// making the decoded type depend on the binding implementation. Such types
+/// implement `FromObject<Context>` but not context-free `FromValue`.
 #[proc_macro_derive(FromJsObject, attributes(js_value))]
 pub fn from_js_object(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
   from_js_object::expand(syn::parse_macro_input!(tokens))

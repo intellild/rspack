@@ -23,4 +23,5 @@ pub use js_values::{
   weak_ref::*,
 };
 pub use napi;
+pub use rspack_napi_macros::FromJsObject;
 pub use utils::*;

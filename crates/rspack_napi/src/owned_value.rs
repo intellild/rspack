@@ -274,9 +274,13 @@ pub fn enumerable_own_keys(object: &Object<'_>) -> napi::Result<Vec<String>> {
   Ok(names)
 }
 
-pub trait FromObject: Sized {
+/// JS property names used to capture an object before its concrete type is known.
+pub trait ObjectFields {
   const FIELDS: &'static [&'static str];
+}
 
+/// Decode an object, optionally selecting binding-specific converters through `Context`.
+pub trait FromObject<Context = ()>: ObjectFields + Sized {
   fn from_object(fields: ObjectRef<'_>) -> Result<Self>;
 }
 
@@ -353,11 +357,7 @@ from_scalar! {
 }
 
 pub fn read_field<T: FromValue>(fields: ObjectRef<'_>, key: &str) -> Result<T> {
-  let value = fields.get(key).unwrap_or(ValueRef {
-    value: &Value::Null,
-    nodes: fields.nodes,
-  });
-  T::from_value(value).ok_or_else(|| error!("Invalid value for option '{key}'"))
+  read_field_with(fields, key, T::from_value)
 }
 
 pub fn read_optional_field_with<T>(
@@ -371,4 +371,41 @@ pub fn read_optional_field_with<T>(
       .ok_or_else(|| error!("Invalid value for option '{key}'")),
     _ => Ok(None),
   }
+}
+
+pub fn read_field_with<T>(
+  fields: ObjectRef<'_>,
+  key: &str,
+  convert: impl FnOnce(ValueRef<'_>) -> Option<T>,
+) -> Result<T> {
+  let value = fields.get(key).unwrap_or(ValueRef {
+    value: &Value::Null,
+    nodes: fields.nodes,
+  });
+  convert(value).ok_or_else(|| error!("Invalid value for option '{key}'"))
+}
+
+/// Decode a string-valued option whose core representation implements From<String>.
+pub fn from_string<T: From<String>>(value: ValueRef<'_>) -> Option<T> {
+  String::from_value(value).map(Into::into)
+}
+
+/// Normalize JS scalar spellings used by boolean-or-string and number-or-string options.
+pub fn stringified(value: ValueRef<'_>) -> Option<String> {
+  match value.value() {
+    Value::Bool(value) => Some(value.to_string()),
+    Value::Number(value) => Some(ryu_js::Buffer::new().format(*value).to_owned()),
+    _ => String::from_value(value),
+  }
+}
+
+pub fn false_or_string(value: ValueRef<'_>) -> Option<String> {
+  match value.value() {
+    Value::Bool(false) => Some("false".into()),
+    _ => String::from_value(value),
+  }
+}
+
+pub fn from_str<T: for<'a> From<&'a str>>(value: ValueRef<'_>) -> Option<T> {
+  String::from_value(value).map(|value| T::from(value.as_str()))
 }
