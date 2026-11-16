@@ -17,7 +17,7 @@ pub struct PathStateMachine {
 
 impl PathStateMachine {
   /// Limit the cost of determinization for user-supplied patterns.
-  pub fn new(patterns: &[impl AsRef<str>], include_count: usize) -> Option<Self> {
+  pub fn new(patterns: &[&str], include_count: usize) -> Option<Self> {
     const DFA_SIZE_LIMIT: usize = 256 * 1024;
     const BUILD_SIZE_LIMIT: usize = 1024 * 1024;
     let dfa = dense::Builder::new()

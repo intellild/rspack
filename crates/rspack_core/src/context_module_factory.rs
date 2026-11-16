@@ -514,7 +514,7 @@ async fn visit_dirs(
     .pattern
     .reg_exp()
     .and_then(|regex| regex.path_match_expression())
-    .and_then(|expression| PathStateMachine::new(&[expression], 1));
+    .and_then(|expression| PathStateMachine::new(&[expression.as_str()], 1));
   let matcher = ContextModuleMatcher::new(options, resolve_options, glob.as_ref(), regex.as_ref());
   if matcher.is_empty() {
     return Ok(());

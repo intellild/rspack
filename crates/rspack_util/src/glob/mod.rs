@@ -296,7 +296,8 @@ pub async fn find_files_by_glob(
     } else {
       normalized_pattern.cow_to_lowercase()
     };
-    GlobExpression::new("", &pattern).and_then(|pattern| PathStateMachine::new(&[pattern], 1))
+    GlobExpression::new("", &pattern)
+      .and_then(|pattern| PathStateMachine::new(&[pattern.as_ref()], 1))
   };
   let cursor = program.as_ref().map(|program| {
     let directory = if options.case_sensitive {

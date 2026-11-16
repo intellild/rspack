@@ -484,6 +484,7 @@ fn compile_context_glob_state_machine(
   if expressions.is_empty() {
     return None;
   }
+  let expressions = expressions.iter().map(AsRef::as_ref).collect::<Vec<_>>();
   let machine = PathStateMachine::new(&expressions, include_count)?;
   for (compiled_index, pattern_index) in indices.into_iter().enumerate() {
     patterns[pattern_index].compiled_index = Some(compiled_index);
